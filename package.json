@@ -16,13 +16,14 @@
   },
   "dependencies": {
     "better-auth": "^1.2.0",
-    "drizzle-orm": "^0.38.0",
+    "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",
     "postgres": "^3.4.5"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250109.0",
-    "drizzle-kit": "^0.30.0",
+    "@types/node": "^22.10.0",
+    "drizzle-kit": "^0.31.4",
     "typescript": "^5.7.0",
     "wrangler": "^3.99.0"
   },

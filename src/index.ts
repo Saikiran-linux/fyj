@@ -1,10 +1,10 @@
-import { Hono } from "hono";
 import { createDb } from "./db/client";
 import { listActiveCampaignIds, runCampaignMatch } from "./matcher";
+import { createApi } from "./api";
 
 /**
  * Ops Console Worker — three entrypoints:
- *  • fetch     — the API (Hono). Better Auth + tenant-scoped routes (TODO f-133).
+ *  • fetch     — the API (Hono). Better Auth + tenant-scoped routes (src/api.ts).
  *  • scheduled — hourly cron: enqueue every active campaign for matching (f-135).
  *  • queue     — consume match jobs: pull new index jobs and surface them.
  *
@@ -12,18 +12,12 @@ import { listActiveCampaignIds, runCampaignMatch } from "./matcher";
  * reached via Hyperdrive; never store request state in module globals.
  */
 
-const app = new Hono<{ Bindings: Env }>();
-
-app.get("/health", (c) => c.json({ ok: true, service: "fyj-ops-console" }));
-
-// TODO (f-133): mount Better Auth handler + tenant-scoped API routes here.
-// Every data route resolves the Principal, then goes through the repository
-// layer (src/db/repo.ts) -> withTenant(), so RLS is always in force.
+const app = createApi();
 
 export default {
   fetch: app.fetch,
 
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const { db, close } = createDb(env.HYPERDRIVE.connectionString);
     ctx.waitUntil(
       (async () => {

@@ -244,3 +244,59 @@ grant execute on all functions in schema app to ops_system;
 alter default privileges in schema public
   grant select, insert, update, delete on tables to ops_system;
 
+
+-- ============================================================================
+-- Principal resolution + signup bootstrap (f-133)
+-- ============================================================================
+-- The Worker authenticates a request with Better Auth (which yields only a
+-- user id), then must resolve WHICH org/role/client that user is — a read of
+-- memberships/clients that RLS itself gates on a principal already being set
+-- (chicken-and-egg). These SECURITY DEFINER helpers run as the table owner
+-- (RLS-exempt) but only ever return rows for the *passed* user id, which the
+-- Worker has cryptographically verified — so a caller cannot resolve another
+-- user's principal. ops_app may execute them but still cannot read the tables
+-- directly. Keep these the ONLY privileged read path off the request thread.
+
+create or replace function app.resolve_staff_memberships(p_user_id text)
+  returns table (org_id uuid, role text, org_name text)
+  language sql stable security definer set search_path = public, pg_temp as $$
+  select m.org_id, m.role::text, o.name
+  from public.memberships m
+  join public.organizations o on o.id = m.org_id
+  where m.user_id = p_user_id and m.status = 'active'
+  order by o.created_at
+$$;
+
+create or replace function app.resolve_client_principal(p_user_id text)
+  returns table (client_id uuid, org_id uuid)
+  language sql stable security definer set search_path = public, pg_temp as $$
+  select c.id, c.org_id
+  from public.clients c
+  where c.auth_user_id = p_user_id and c.portal_enabled = true
+$$;
+
+-- Signup bootstrap: a brand-new staff user gets their own org + admin membership
+-- atomically. Idempotent — returns the user's existing org if they already have
+-- an active membership (so a retried signup hook can't double-create). Called
+-- from Better Auth's user.create.after databaseHook (see src/auth.ts).
+create or replace function app.bootstrap_org_for_user(p_user_id text, p_org_name text)
+  returns uuid language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_org uuid;
+begin
+  select org_id into v_org from public.memberships
+   where user_id = p_user_id and status = 'active'
+   order by created_at limit 1;
+  if v_org is not null then return v_org; end if;
+
+  insert into public.organizations (name)
+       values (coalesce(nullif(p_org_name, ''), 'My workspace'))
+    returning id into v_org;
+  insert into public.memberships (org_id, user_id, role, status)
+       values (v_org, p_user_id, 'admin', 'active');
+  return v_org;
+end $$;
+
+-- These are defined AFTER the blanket grant above, so grant them explicitly.
+grant execute on function app.resolve_staff_memberships(text) to ops_app, ops_system;
+grant execute on function app.resolve_client_principal(text)  to ops_app, ops_system;
+grant execute on function app.bootstrap_org_for_user(text, text) to ops_app;

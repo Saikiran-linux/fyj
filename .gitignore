@@ -10,3 +10,4 @@ dist/
 # Agent tooling — re-materialize with: npx skills add https://github.com/cloudflare/skills
 .agents/
 .claude/
+skills-lock.json

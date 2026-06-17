@@ -7,7 +7,8 @@ import { defineConfig } from "drizzle-kit";
 // Use the Neon DIRECT (non-pooled) connection string for migrations.
 export default defineConfig({
   dialect: "postgresql",
-  schema: "./src/db/schema.ts",
+  // Both the ops tenancy tables and the Better Auth core tables (f-133).
+  schema: ["./src/db/schema.ts", "./src/db/auth-schema.ts"],
   out: "./drizzle",
   dbCredentials: {
     url: process.env.DATABASE_URL!,
