@@ -23,20 +23,20 @@
       "description": "Better Auth (Drizzle adapter, per-request over Hyperdrive; app-owned orgs via SECURITY DEFINER signup bootstrap); resolvePrincipal() via SECURITY DEFINER resolvers; mandatory org-scoped repository (every call -> withTenant -> RLS); Hono tenant API; Next.js web/ UI shell (Clay-inspired) with Dashboard/Clients/Client detail/Campaign matches/Members.",
       "dependencies": ["f-131", "f-132"],
       "status": "done",
-      "evidence": "Backend merged via PR #1; UI in draft PR #3. Worker typecheck clean; web typecheck clean + next build green (11 routes). NOT runtime-verified — gated on f-infra (RLS smoke test in docs/INFRA-SETUP.md)."
+      "evidence": "DEPLOYED + verified live 2026-06-18. Backend merged (PR #1), UI + harness + CORS merged (PR #3 -> main 4d7e0bf). LIVE: UI https://fyj-console.vercel.app (Vercel, git-auto-deploy from main, root dir web), API https://fyj-ops-console.saikiran13055.workers.dev (Cloudflare Worker). Signup verified end-to-end from the real origin: CORS 204 preflight, 200 signup, cross-site cookie (SameSite=None;Secure;Partitioned), and org + admin membership auto-created by app.bootstrap_org_for_user. ops_app non-BYPASSRLS, RLS fails closed. Added cross-origin support: hono/cors + Better Auth trustedOrigins + defaultCookieAttributes keyed off WEB_ORIGIN (src/api.ts, src/auth.ts)."
     },
     {
       "id": "f-infra",
-      "name": "Provision runtime infra + secrets (human)",
-      "description": "Neon project (+ vector/pgcrypto), db:migrate then db:policies (+ set ops_app/ops_system passwords), Hyperdrive/R2/KV/Queue ids into wrangler.jsonc, wrangler secrets, rotate the Supabase service-role key. Blocks all end-to-end verification. Checklist + RLS smoke test in docs/INFRA-SETUP.md.",
+      "name": "Provision runtime infra + secrets",
+      "description": "Neon project (+ vector/pgcrypto), apply schema + db/policies.sql (+ ops_app/ops_system roles), Hyperdrive/R2/KV/Queue + wrangler secrets, deploy Worker, point the Vercel app at it. See docs/INFRA-SETUP.md for the live resource names/ids and operational notes.",
       "dependencies": ["f-131"],
-      "status": "blocked",
-      "evidence": "Blocked on human/account access (Neon + Cloudflare + secrets). Until done, f-133 and everything below cannot run end-to-end."
+      "status": "done",
+      "evidence": "DONE 2026-06-18. Neon store 'neon-bisque-yacht' (project tiny-silence-25740582, db neondb): 14 tables, 22 RLS policies, 10 app.* fns, ops_app/ops_system roles (ops_app non-BYPASSRLS). Schema applied over Neon's HTTPS serverless driver (raw 5432 egress is blocked in CI). Cloudflare (acct 489409dba6e11499199acff6ffb8eddf): Hyperdrive 78ccefa7a3284ceebccc7fa1ceac1379, KV b6f1e38fdce3455783d0038eb62dac26, Queue fyj-match, R2 fyj-resumes; secrets BETTER_AUTH_SECRET + FYJ_INDEX_KEY set. Worker deployed. CAVEAT: ops_system is NOT BYPASSRLS (Neon owner can't grant it via SQL) — the f-135 matcher needs that resolved. SECURITY: the Neon/Cloudflare/Vercel tokens + Supabase key shared in chat must be rotated."
     },
     {
       "id": "f-134",
       "name": "Clients/profiles + resume -> R2 -> embed",
-      "description": "Assignment-scoped client CRUD (have list/create); resume upload to R2; a Worker parses PDF/DOCX -> text -> embedding -> client_profiles.embedding + parsed_profile. Lights up the Jobs search + the dashboard command bar (which call search_jobs against a profile embedding).",
+      "description": "Assignment-scoped client CRUD (have list/create); resume upload to R2 (RESUMES bucket fyj-resumes is live); a Worker parses PDF/DOCX -> text -> embedding -> client_profiles.embedding + parsed_profile. Lights up the Jobs screen + dashboard command bar (which call search_jobs against a profile embedding). NEEDS OPENAI_API_KEY secret on the Worker (wrangler secret put). This is the ACTIVE next feature now that infra is live.",
       "dependencies": ["f-133", "f-infra"],
       "status": "not-started",
       "evidence": ""
