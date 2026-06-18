@@ -4,6 +4,18 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-18 — f-134 fix: summarize-then-embed (match how JDs are embedded)
+
+The first f-134 cut embedded the **raw resume text**. The fyj index embeds jobs from their **LLM summary**, not the raw description (fyj_scanner `src/summarize.mjs` + `buildJobText` in `src/embeddings.mjs`; proof in `scripts/embed-resume.mjs`). Embedding raw prose sits in a different region of the space and ranks worse. Fixed to replicate the JD pipeline exactly:
+
+- **`src/summarize.ts`** (new): resume → **gpt-4o-mini** (temp 0, max_tokens 500) → the **identical 14-field labeled precis** (Role/Level/Experience/Required skills/Preferred skills/Team/Industry/Company stage/Location/Remote policy/Compensation/Benefits/Visa/Schedule) the scanner produces for jobs, plus a leading `Title:` (jobs carry title as a column; resumes don't). Then assembles `title \n\n signal-block \n\n summary` — the **same shape `buildJobText` embeds** (Seniority/Workplace/Employment type/Department/Location derived from the precis). Framed as the role the candidate *fills* so it lands in the JD distribution. Retries 429/5xx.
+- **`src/embeddings.ts`**: added **`embedRaw`** — embeds the assembled input **verbatim (newlines preserved)**, because jobs are embedded with their `\n` structure intact and the embedder keys off the labeled lines. The old `embedText` (whitespace-collapsing) now serves ONLY the short free-text query path (`/api/search`), which is correct — fyj_scanner embeds NL queries raw too.
+- **`src/api.ts`** resume route: `parseResume → summarizeResume → embedRaw(summary.embedInput)`; stores `title` + `summary` in `parsedProfile`.
+
+Gates green: Worker typecheck + `wrangler dry-run` (966 KiB gzip). Still needs `OPENAI_API_KEY` (now used for BOTH the gpt-4o-mini summary and the embedding) + deploy to verify live.
+
+---
+
 ## 2026-06-18 — f-135 built (continuous matcher, SECURITY DEFINER path)
 
 **Active feature:** `f-135` (continuous campaign matcher) — **code done, gates green.** Next: `f-136` (deep eval A–G).

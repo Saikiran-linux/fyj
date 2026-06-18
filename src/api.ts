@@ -6,7 +6,8 @@ import { resolvePrincipal } from "./principal";
 import * as repo from "./db/repo";
 import { matchAction, feedbackSignal, memberRole } from "./db/schema";
 import { parseResume } from "./resume";
-import { embedText } from "./embeddings";
+import { embedText, embedRaw } from "./embeddings";
+import { summarizeResume } from "./summarize";
 import { searchAndHydrate, type JobFilters } from "./index-client";
 
 type Vars = { db: DB; principal: Principal };
@@ -157,11 +158,22 @@ export function createApi() {
       httpMetadata: { contentType: file.type || "application/octet-stream" },
     });
 
-    const { embedding, model } = await embedText(c.env, parsed.text);
+    // Match how the index embeds JOBS: summarize the resume into the same
+    // JD-style 14-field precis + title/signal prelude (src/summarize.ts mirrors
+    // fyj_scanner's summarize.mjs + buildJobText), then embed that VERBATIM so
+    // the resume lands in the job vector distribution. Embedding raw prose would
+    // rank worse — jobs.embedding comes from the summary, not the description.
+    const summary = await summarizeResume(c.env, parsed.text);
+    const { embedding, model } = await embedRaw(c.env, summary.embedInput);
     const row = await repo.attachResume(c.get("db"), p, profileId, {
       resumeStoragePath: storagePath,
       resumeText: parsed.text,
-      parsedProfile: { ...parsed.profile, kind: parsed.kind },
+      parsedProfile: {
+        ...parsed.profile,
+        kind: parsed.kind,
+        title: summary.title,
+        summary: summary.summary,
+      },
       embedding,
       embeddingModel: model,
     });
