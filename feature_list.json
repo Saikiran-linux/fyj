@@ -46,8 +46,8 @@
       "name": "Continuous campaign matcher (live)",
       "description": "Wire the existing matcher.ts: Cloudflare Cron enqueues active campaigns -> Queue consumer calls search_jobs (first_seen_at > last_run_at) over HTTPS -> upserts campaign_matches in Neon. Feeds the curation UI.",
       "dependencies": ["f-134"],
-      "status": "not-started",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Implemented on branch claude/bold-cori-miypka. Resolved the ops_system-not-BYPASSRLS blocker via SECURITY DEFINER (chosen by user over pursuing BYPASSRLS): db/policies.sql adds app.list_active_campaigns(), app.get_campaign_for_match(uuid) (returns embedding::text — pgvector has no raw-RPC driver mapping), app.record_campaign_run(uuid, jsonb) (inserts campaign_matches on conflict (campaign_id,job_id) do nothing + bumps last_run_at atomically; org_id/client_id derived from the campaign, never the payload). All owner-owned/RLS-exempt (file already forbids FORCE RLS for exactly this), granted to ops_app+ops_system. src/matcher.ts rewritten to call these over the existing ops_app Hyperdrive connection (no second binding / no BYPASSRLS role); cron enqueues active campaigns, queue consumer matches each incrementally (since=last_run_at, targetOnly default true). GATES GREEN: ./init.sh (Worker typecheck + db:generate unchanged + web typecheck), wrangler dry-run bundles. NOT runtime-verified (no Neon/CF creds this session): db/policies.sql must be re-applied to Neon for the new app.* fns, and the Worker redeployed, before the cron actually surfaces matches."
     },
     {
       "id": "f-136",

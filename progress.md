@@ -4,6 +4,28 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-18 — f-135 built (continuous matcher, SECURITY DEFINER path)
+
+**Active feature:** `f-135` (continuous campaign matcher) — **code done, gates green.** Next: `f-136` (deep eval A–G).
+
+### The blocker, resolved
+`ops_system` can't be `BYPASSRLS` on Neon (owner role can't grant it via SQL). **User chose SECURITY DEFINER over chasing BYPASSRLS.** The matcher now runs on the **existing `ops_app` Hyperdrive connection** (no second binding, no privileged role) and reaches across tenants ONLY through owner-owned, RLS-exempt functions — the same trick as the f-133 resolvers (and the file already forbids `FORCE RLS` precisely so this works).
+
+### What shipped
+- **`db/policies.sql`** (f-135 section): `app.list_active_campaigns()` → (id, org_id); `app.get_campaign_for_match(uuid)` → campaign + 1:1 profile (embedding **as text** — pgvector has no driver mapping over a raw RPC, Worker `JSON.parse`s it) + filters + watermark; `app.record_campaign_run(uuid, jsonb)` → inserts `campaign_matches` `on conflict (campaign_id, job_id) do nothing` **and** bumps `last_run_at`, atomically. **org_id/client_id are derived from the campaign id inside the DB, never trusted from the payload.** Granted to ops_app + ops_system.
+- **`src/matcher.ts`** rewritten to call those via `db.execute(sql\`…\`)` instead of raw drizzle selects/inserts (which RLS denies for ops_app). Incremental: `since = last_run_at`, `targetOnly` defaults true. No embedding → returns early WITHOUT bumping the watermark (so first jobs aren't skipped once embedded).
+- Cron (`17 * * * *`) enqueues active campaigns → queue consumer matches each (unchanged wiring in `src/index.ts`).
+
+### Gates — green
+- `./init.sh`: Worker typecheck + `db:generate` (no schema.ts change) + web typecheck. `wrangler deploy --dry-run` bundles.
+
+### ⚠️ Remaining to run LIVE (operational, needs creds)
+1. **Re-apply `db/policies.sql` to Neon** so the new `app.list_active_campaigns` / `get_campaign_for_match` / `record_campaign_run` exist (idempotent — safe to re-run).
+2. Redeploy the Worker (`npm run deploy`). Then the hourly cron surfaces matches.
+3. NOT runtime-verified in-repo (no creds). Also still needs `OPENAI_API_KEY` from f-134 for embeddings to exist at all.
+
+---
+
 ## 2026-06-18 — f-134 built (resume → R2 → embed → index search)
 
 **Active feature:** `f-134` (clients/profiles + resume→R2→embed) — **code done, gates green.** Next: `f-135` (continuous matcher).
