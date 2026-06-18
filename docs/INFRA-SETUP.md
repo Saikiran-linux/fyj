@@ -1,9 +1,35 @@
 # Ops Console — Infra & Secrets Setup Checklist
 
-> **Status: NOT DONE — blocks runtime verification of f-133 and everything downstream.**
-> The code (Worker API, RLS, repository, auth, and the `web/` UI) is written and typechecks,
-> but nothing can run end-to-end until the boxes below are ticked. Owner: **human** (needs
-> Neon + Cloudflare + secret access). When done, mark each box and run the smoke test at the end.
+> **Status: ✅ DONE (2026-06-18) — deployed & live; signup verified end-to-end.**
+> The checklist below is kept as reference. See "Live deployment state" first.
+
+## Live deployment state (what actually exists)
+
+| Resource | Value |
+|---|---|
+| UI (prod) | https://fyj-console.vercel.app — Vercel project `fyj-ops-console`, git auto-deploy from `main`, **root dir `web`** |
+| API (Worker) | https://fyj-ops-console.saikiran13055.workers.dev — `wrangler deploy` from repo root |
+| Neon | store **`neon-bisque-yacht`**, project `tiny-silence-25740582`, db `neondb`, role `neondb_owner` (owner) + `ops_app`/`ops_system` (app roles) |
+| Cloudflare acct | `489409dba6e11499199acff6ffb8eddf` |
+| Hyperdrive | `78ccefa7a3284ceebccc7fa1ceac1379` (→ Neon **direct** endpoint as `ops_app`) |
+| KV (`JOB_CACHE`) | `b6f1e38fdce3455783d0038eb62dac26` |
+| Queue / R2 | `fyj-match` / `fyj-resumes` |
+| Worker secrets set | `BETTER_AUTH_SECRET`, `FYJ_INDEX_KEY` (NOT `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` yet — needed for f-134/136) |
+| Worker vars | `BETTER_AUTH_URL`, `WEB_ORIGIN` (localhost + both vercel domains), `FYJ_INDEX_URL` — in `wrangler.jsonc` |
+
+**How the schema was applied:** raw Postgres `5432` egress is **blocked in this CI**, so `npm run db:migrate`/`db:policies` (which use a 5432 driver) can't connect from here. Schema + `db/policies.sql` were applied over **Neon's serverless/WebSocket driver (port 443)** instead (split `drizzle/0000` on `--> statement-breakpoint`; ran `db/policies.sql` as one simple-protocol query). From a normal network the `npm run db:migrate` / `db:policies` scripts work as written.
+
+**Known caveats:**
+- `ops_system` is **NOT BYPASSRLS** — Neon's owner role can't grant BYPASSRLS via SQL. Auth/now is fine; the **f-135 matcher** needs cross-tenant reads, so resolve this (Neon role flag, or refactor the matcher into a `SECURITY DEFINER` function).
+- **Secrets are write-only / not in the repo.** `BETTER_AUTH_SECRET` + the `ops_app` password exist only in the Worker secret + Hyperdrive config. To rotate `ops_app`: reset its password in Neon → patch the Hyperdrive config → `wrangler deploy`.
+- **Rotate every credential pasted in chat** (Neon API key, Cloudflare token, Vercel token, Supabase `sb_secret_…`).
+
+---
+
+### Original checklist (reference — all done)
+
+> The code (Worker API, RLS, repository, auth, and the `web/` UI) is written and typechecks.
+> These were the steps; all are complete per the table above.
 
 ## 1. Neon Postgres (ops DB)
 - [ ] Create a Neon project (region near the Workers).
