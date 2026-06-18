@@ -1,0 +1,28 @@
+{
+  "name": "fyj-ops-console-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ops Console UI (f-133) — Next.js App Router, Clay-inspired. Talks to the Worker API (NEXT_PUBLIC_API_URL) via lib/api.ts; auth via better-auth/react. Deploys to Cloudflare Pages (add @opennextjs/cloudflare to wire the adapter).",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "better-auth": "^1.6.0",
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.0"
+  }
+}

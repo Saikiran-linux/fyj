@@ -10,13 +10,22 @@
     "head_sampling_rate": 1
   },
 
+  // Non-secret config. BETTER_AUTH_URL = this Worker's deployed origin;
+  // WEB_ORIGIN = comma-separated browser origins of the UI (CORS + trusted
+  // origins + cross-site cookies). Set these to the real URLs on deploy.
+  "vars": {
+    "BETTER_AUTH_URL": "https://fyj-ops-console.saikiran13055.workers.dev",
+    "WEB_ORIGIN": "http://localhost:3000,https://fyj-console.vercel.app,https://fyj-ops-console.vercel.app",
+    "FYJ_INDEX_URL": "https://mwcpoaefmggapztkxakp.supabase.co"
+  },
+
   // Pooled Postgres connection to Neon. Create the Hyperdrive config pointing at
   // the Neon POOLED connection string, then paste its id here.
   //   wrangler hyperdrive create fyj-ops --connection-string="postgres://ops_app:...@...neon.tech/...?sslmode=require"
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
-      "id": "<HYPERDRIVE_ID>",
+      "id": "78ccefa7a3284ceebccc7fa1ceac1379",
       "localConnectionString": "postgres://ops_app:password@localhost:5432/ops_console"
     }
   ],
@@ -25,7 +34,7 @@
   "r2_buckets": [{ "binding": "RESUMES", "bucket_name": "fyj-resumes" }],
 
   // Hydrated job-detail cache (from the fyj index get_job).
-  "kv_namespaces": [{ "binding": "JOB_CACHE", "id": "<KV_NAMESPACE_ID>" }],
+  "kv_namespaces": [{ "binding": "JOB_CACHE", "id": "b6f1e38fdce3455783d0038eb62dac26" }],
 
   // Continuous matcher: cron enqueues active campaigns; the consumer matches each.
   "queues": {

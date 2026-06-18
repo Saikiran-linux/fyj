@@ -7,7 +7,14 @@ dist/
 .env
 *.log
 
-# Agent tooling — re-materialize with: npx skills add https://github.com/cloudflare/skills
+# Agent tooling (not committed) — re-materialize with:
+#   npx skills add walkinglabs/learn-harness-engineering --skill harness-creator
+#   npx skills add better-auth/skills
+#   npx skills add https://github.com/cloudflare/skills
 .agents/
 .claude/
 skills-lock.json
+
+# Next.js web app build output (web/ has its own .gitignore too)
+web/.next/
+web/out/

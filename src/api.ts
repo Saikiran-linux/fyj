@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { createDb, type DB, type Principal } from "./db/client";
 import { createAuth } from "./auth";
 import { resolvePrincipal } from "./principal";
@@ -19,6 +20,24 @@ export function createApi() {
   const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
   app.get("/health", (c) => c.json({ ok: true, service: "fyj-ops-console" }));
+
+  // CORS for the browser UI (a different origin, e.g. *.vercel.app). Credentials
+  // are on (the Better Auth session cookie), so the allowed origin must be the
+  // exact request origin, never "*". WEB_ORIGIN is a comma-separated allowlist;
+  // requests from an unlisted origin get no CORS headers (browser blocks them).
+  // Registered first so OPTIONS preflight is answered before the DB middleware.
+  app.use("/api/*", (c, next) => {
+    const allow = (c.env.WEB_ORIGIN ?? "http://localhost:3000")
+      .split(",")
+      .map((o) => o.trim())
+      .filter(Boolean);
+    return cors({
+      origin: (origin) => (allow.includes(origin) ? origin : allow[0] ?? null),
+      credentials: true,
+      allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+      allowHeaders: ["Content-Type", "Authorization", "x-org-id"],
+    })(c, next);
+  });
 
   // Per-request Hyperdrive pool, closed after the response is flushed.
   app.use("/api/*", async (c, next) => {

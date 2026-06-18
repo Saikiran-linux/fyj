@@ -10,6 +10,9 @@ BETTER_AUTH_SECRET=""
 # wrangler dev URL http://localhost:8787). Workers bindings aren't on
 # process.env, so this is passed explicitly in src/auth.ts.
 BETTER_AUTH_URL="http://localhost:8787"
+# Browser origin(s) of the web UI, comma-separated — used for CORS + Better Auth
+# trustedOrigins + cross-site cookie attributes. Local dev + the Vercel app.
+WEB_ORIGIN="http://localhost:3000,https://fyj-ops-console.vercel.app"
 
 # Embeddings (profile resume -> vector) and deep-eval (A–G + CV)
 OPENAI_API_KEY=""

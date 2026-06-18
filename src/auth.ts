@@ -24,11 +24,33 @@ import * as authSchema from "./db/auth-schema";
  * `waitUntil`.
  */
 export function createAuth(env: Env, db: DB, waitUntil?: (p: Promise<unknown>) => void) {
+  // The UI lives on a different origin (e.g. *.vercel.app) from this API, so:
+  //  - it must be a trusted origin (CSRF), and
+  //  - the session cookie must be SameSite=None; Secure; Partitioned to be sent
+  //    on cross-site fetch(credentials:"include"). Only do that over https —
+  //    localhost dev is same-site (same host, different port) and stays Lax.
+  const webOrigins = (env.WEB_ORIGIN ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+  const trustedOrigins = [...(env.BETTER_AUTH_URL ? [env.BETTER_AUTH_URL] : []), ...webOrigins];
+  const crossSite = webOrigins.some((o) => o.startsWith("https://"));
+
+  const advanced: Record<string, unknown> = {};
+  if (crossSite) {
+    advanced.defaultCookieAttributes = { sameSite: "none", secure: true, partitioned: true };
+  }
+  // backgroundTasks keeps deferred work (timing-safe email, the signup org hook)
+  // alive on serverless; the caller supplies the platform waitUntil.
+  if (waitUntil) {
+    advanced.backgroundTasks = { handler: (p: Promise<unknown>) => waitUntil(p) };
+  }
+
   return betterAuth({
     appName: "fyj-ops-console",
     secret: env.BETTER_AUTH_SECRET,
     baseURL: env.BETTER_AUTH_URL,
-    trustedOrigins: env.BETTER_AUTH_URL ? [env.BETTER_AUTH_URL] : [],
+    trustedOrigins,
     database: drizzleAdapter(db, { provider: "pg", schema: authSchema }),
     emailAndPassword: {
       enabled: true,
@@ -36,6 +58,7 @@ export function createAuth(env: Env, db: DB, waitUntil?: (p: Promise<unknown>) =
       // emailVerification.sendVerificationEmail is configured (f-138 digests).
       requireEmailVerification: false,
     },
+    advanced,
     databaseHooks: {
       user: {
         create: {
@@ -48,9 +71,6 @@ export function createAuth(env: Env, db: DB, waitUntil?: (p: Promise<unknown>) =
         },
       },
     },
-    ...(waitUntil
-      ? { advanced: { backgroundTasks: { handler: (p: Promise<unknown>) => waitUntil(p) } } }
-      : {}),
   });
 }
 
