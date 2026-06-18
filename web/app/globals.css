@@ -20,14 +20,16 @@
   --color-danger: #dc2626;
   --color-info: #0ea5e9;
 
-  --radius-sm: 6px;
-  --radius: 10px;
-  --radius-lg: 14px;
+  /* Console-wide: square corners. Zero the radius scale so every rounded-sm /
+     rounded / rounded-lg utility resolves to 0. */
+  --radius-sm: 0px;
+  --radius: 0px;
+  --radius-lg: 0px;
 
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
   --shadow: 0 4px 12px rgba(16, 24, 40, 0.08);
 
-  --font-sans: "Inter", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-sans: var(--font-source-sans), -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 html,
@@ -40,6 +42,10 @@ body {
 
 * {
   border-color: var(--color-border);
+  /* Belt-and-suspenders for the radius utilities the @theme scale doesn't cover
+     (rounded-full on avatars / the command-bar button, rounded-md/xl). Keeps the
+     entire console square-cornered. */
+  border-radius: 0 !important;
 }
 
 /* tabular numerals for table figures */
