@@ -43,6 +43,14 @@ export interface NewProfileInput {
   targetFilters?: Record<string, unknown>;
 }
 
+export interface AttachResumeInput {
+  resumeStoragePath?: string | null;
+  resumeText: string;
+  parsedProfile?: Record<string, unknown> | null;
+  embedding: number[];
+  embeddingModel: string;
+}
+
 export interface FeedbackInput {
   campaignId?: string | null;
   jobId?: string | null;
@@ -138,6 +146,40 @@ export function createProfile(db: DB, who: Principal, input: NewProfileInput) {
       })
       .returning();
     if (row) await audit(tx, who, "profile.create", "client_profile", row.id, { label: input.label });
+    return row ?? null;
+  });
+}
+
+export function getProfile(db: DB, who: Principal, profileId: string) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(clientProfiles)
+      .where(eq(clientProfiles.id, profileId))
+      .limit(1);
+    return row ?? null;
+  });
+}
+
+// Persist a parsed+embedded resume onto its profile (f-134). The embedding is
+// what the index search_jobs RPC queries against; embeddedAt flips the UI's
+// "needs embed" → "embedded" and makes the profile matchable.
+export function attachResume(db: DB, who: Principal, profileId: string, input: AttachResumeInput) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .update(clientProfiles)
+      .set({
+        resumeStoragePath: input.resumeStoragePath ?? null,
+        resumeText: input.resumeText,
+        parsedProfile: input.parsedProfile ?? null,
+        embedding: input.embedding,
+        embeddingModel: input.embeddingModel,
+        embeddedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(clientProfiles.id, profileId))
+      .returning();
+    if (row) await audit(tx, who, "profile.embed", "client_profile", row.id, { model: input.embeddingModel });
     return row ?? null;
   });
 }

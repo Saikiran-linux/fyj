@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
@@ -92,17 +93,79 @@ export default function ClientDetailPage() {
                 </p>
               )}
               {profiles?.map((p) => (
-                <div key={p.id} className="flex items-center justify-between py-3">
-                  <span className="text-sm font-medium text-text">{p.label}</span>
-                  <Chip tone={p.embeddedAt ? "success" : "warning"}>
-                    {p.embeddedAt ? "embedded" : "needs embed"}
-                  </Chip>
-                </div>
+                <ProfileRow key={p.id} clientId={id} profile={p} onChange={loadProfiles} />
               ))}
             </div>
           </Card>
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * One targeting profile: shows embed status and lets staff upload a resume
+ * (PDF/DOCX/text). The upload route parses → embeds → flips the profile to
+ * "embedded", after which the job matches link is live.
+ */
+function ProfileRow({
+  clientId,
+  profile,
+  onChange,
+}: {
+  clientId: string;
+  profile: ClientProfile;
+  onChange: () => Promise<unknown>;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-uploading the same filename
+    if (!file) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.uploadResume(clientId, profile.id, file);
+      await onChange();
+    } catch (e2) {
+      setErr((e2 as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 py-3">
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium text-text">{profile.label}</div>
+        {err && <div className="mt-0.5 text-xs text-danger">{err}</div>}
+      </div>
+      <div className="flex items-center gap-2">
+        {profile.embeddedAt && (
+          <Link
+            href={`/jobs?profile=${profile.id}`}
+            className="text-xs font-medium text-primary hover:underline"
+          >
+            View jobs →
+          </Link>
+        )}
+        <Chip tone={profile.embeddedAt ? "success" : "warning"}>
+          {busy ? "embedding…" : profile.embeddedAt ? "embedded" : "needs embed"}
+        </Chip>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".pdf,.docx,.txt,.md,application/pdf"
+          className="hidden"
+          onChange={onPick}
+        />
+        <Button variant="secondary" disabled={busy} onClick={() => fileRef.current?.click()}>
+          {profile.embeddedAt ? "Replace" : "Upload resume"}
+        </Button>
+      </div>
+    </div>
   );
 }

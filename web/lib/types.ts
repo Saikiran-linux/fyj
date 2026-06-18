@@ -27,8 +27,24 @@ export interface ClientProfile {
   clientId: string;
   label: string;
   resumeText: string | null;
+  resumeStoragePath: string | null;
+  parsedProfile: Record<string, unknown> | null;
+  embeddingModel: string | null;
   embeddedAt: string | null;
   createdAt: string;
+}
+
+/** A ranked job from the index, hydrated for display (search routes). */
+export interface JobHit {
+  jobId: string;
+  companyId: string;
+  title: string;
+  company: string;
+  location: string | null;
+  url: string | null;
+  description: string | null;
+  score: number;
+  rank: number;
 }
 
 export type MatchActionValue =

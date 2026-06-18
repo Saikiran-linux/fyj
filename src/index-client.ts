@@ -35,6 +35,12 @@ export interface JobDetail {
   description: string | null;
 }
 
+/** A ranked job hydrated with its display detail. What the Jobs UI renders. */
+export interface JobHit extends JobDetail {
+  score: number;
+  rank: number;
+}
+
 function headers(env: Env): HeadersInit {
   return {
     "content-type": "application/json",
@@ -80,4 +86,28 @@ export async function getJob(
   const row = (await res.json()) as JobDetail | null;
   if (row) await env.JOB_CACHE.put(cacheKey, JSON.stringify(row), { expirationTtl: 86_400 });
   return row;
+}
+
+/**
+ * Search the index and hydrate the top hits for display in one call (f-134).
+ * search_jobs returns ranked refs; get_job (KV-cached) fills in title/company/
+ * url/description. We only hydrate the first `hydrate` hits (parallel) to bound
+ * fan-out — the long tail is rarely scrolled and each get_job is a round-trip.
+ */
+export async function searchAndHydrate(
+  env: Env,
+  embedding: number[],
+  filters: JobFilters,
+  hydrate = 25,
+): Promise<JobHit[]> {
+  const matches = await searchJobs(env, embedding, filters);
+  const top = matches.slice(0, hydrate);
+  const hits = await Promise.all(
+    top.map(async (m, i): Promise<JobHit | null> => {
+      const detail = await getJob(env, m.jobId, m.companyId);
+      if (!detail) return null;
+      return { ...detail, score: m.score, rank: i + 1 };
+    }),
+  );
+  return hits.filter((h): h is JobHit => h !== null);
 }
