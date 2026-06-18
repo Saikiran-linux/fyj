@@ -8,6 +8,7 @@ interface Env {
   MATCH_QUEUE: Queue<MatchJob>;
   BETTER_AUTH_SECRET: string;
   BETTER_AUTH_URL: string;
+  WEB_ORIGIN: string;
   OPENAI_API_KEY: string;
   ANTHROPIC_API_KEY: string;
   FYJ_INDEX_URL: string;

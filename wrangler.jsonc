@@ -10,6 +10,14 @@
     "head_sampling_rate": 1
   },
 
+  // Non-secret config. BETTER_AUTH_URL = this Worker's deployed origin;
+  // WEB_ORIGIN = comma-separated browser origins of the UI (CORS + trusted
+  // origins + cross-site cookies). Set these to the real URLs on deploy.
+  "vars": {
+    "BETTER_AUTH_URL": "https://fyj-ops-console.workers.dev",
+    "WEB_ORIGIN": "http://localhost:3000,https://fyj-ops-console.vercel.app"
+  },
+
   // Pooled Postgres connection to Neon. Create the Hyperdrive config pointing at
   // the Neon POOLED connection string, then paste its id here.
   //   wrangler hyperdrive create fyj-ops --connection-string="postgres://ops_app:...@...neon.tech/...?sslmode=require"
