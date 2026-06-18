@@ -1,0 +1,77 @@
+{
+  "$comment": "Harness feature tracker for the fyj ops-console (Product A). Schema: .agents/skills/harness-creator/templates/feature-list.schema.json. One active feature at a time; record evidence before marking done. Long-form session notes live in progress.md; the read contract (f-132) lives in the sibling fyj_scanner repo.",
+  "features": [
+    {
+      "id": "f-131",
+      "name": "P1 foundation — Workers + Neon + RLS",
+      "description": "Drizzle tenancy schema (orgs, memberships, clients, profiles, 1:1 campaigns, campaign_matches, reports, placements, feedback, audit_log); db/policies.sql two-principal RLS core (app.* GUC readers, can_access_client/can_view_as_client, ops_app no-BYPASSRLS + ops_system); withTenant() client; read-only index client; matcher; Worker entry.",
+      "dependencies": [],
+      "status": "done",
+      "evidence": "Merged to main via PR #1. db:generate emits drizzle/0000 (14 tables: 10 tenancy + 4 auth). npm run typecheck clean."
+    },
+    {
+      "id": "f-132",
+      "name": "Index read contract — search_jobs / get_job (in fyj_scanner)",
+      "description": "The only coupling to the job index: parameterized search_jobs(query_vec, filters jsonb) + get_job(p_job_id, p_company_id) PostgREST RPCs the Worker calls over HTTPS (src/index-client.ts). Lives in the sibling fyj_scanner repo, not here.",
+      "dependencies": [],
+      "status": "done",
+      "evidence": "fyj_scanner PR #57 (merged). Applied to the index DB (migration add_search_jobs_and_get_job_rpcs) + verified live: filter paths correct (self-match 1.0000); get_job returns 7 camelCase keys + description; null on miss."
+    },
+    {
+      "id": "f-133",
+      "name": "Auth + repository + tenant API + UI shell",
+      "description": "Better Auth (Drizzle adapter, per-request over Hyperdrive; app-owned orgs via SECURITY DEFINER signup bootstrap); resolvePrincipal() via SECURITY DEFINER resolvers; mandatory org-scoped repository (every call -> withTenant -> RLS); Hono tenant API; Next.js web/ UI shell (Clay-inspired) with Dashboard/Clients/Client detail/Campaign matches/Members.",
+      "dependencies": ["f-131", "f-132"],
+      "status": "done",
+      "evidence": "Backend merged via PR #1; UI in draft PR #3. Worker typecheck clean; web typecheck clean + next build green (11 routes). NOT runtime-verified — gated on f-infra (RLS smoke test in docs/INFRA-SETUP.md)."
+    },
+    {
+      "id": "f-infra",
+      "name": "Provision runtime infra + secrets (human)",
+      "description": "Neon project (+ vector/pgcrypto), db:migrate then db:policies (+ set ops_app/ops_system passwords), Hyperdrive/R2/KV/Queue ids into wrangler.jsonc, wrangler secrets, rotate the Supabase service-role key. Blocks all end-to-end verification. Checklist + RLS smoke test in docs/INFRA-SETUP.md.",
+      "dependencies": ["f-131"],
+      "status": "blocked",
+      "evidence": "Blocked on human/account access (Neon + Cloudflare + secrets). Until done, f-133 and everything below cannot run end-to-end."
+    },
+    {
+      "id": "f-134",
+      "name": "Clients/profiles + resume -> R2 -> embed",
+      "description": "Assignment-scoped client CRUD (have list/create); resume upload to R2; a Worker parses PDF/DOCX -> text -> embedding -> client_profiles.embedding + parsed_profile. Lights up the Jobs search + the dashboard command bar (which call search_jobs against a profile embedding).",
+      "dependencies": ["f-133", "f-infra"],
+      "status": "not-started",
+      "evidence": ""
+    },
+    {
+      "id": "f-135",
+      "name": "Continuous campaign matcher (live)",
+      "description": "Wire the existing matcher.ts: Cloudflare Cron enqueues active campaigns -> Queue consumer calls search_jobs (first_seen_at > last_run_at) over HTTPS -> upserts campaign_matches in Neon. Feeds the curation UI.",
+      "dependencies": ["f-134"],
+      "status": "not-started",
+      "evidence": ""
+    },
+    {
+      "id": "f-136",
+      "name": "Deep eval (A-G) + CV tailor + tracker",
+      "description": "On-demand Sonnet/Opus A-G report (prompt-cached) writing reports; multi-agent CV-tailor -> PDF; placements kanban (Tracker screen).",
+      "dependencies": ["f-135"],
+      "status": "not-started",
+      "evidence": ""
+    },
+    {
+      "id": "f-137",
+      "name": "Client portal + feedback loop",
+      "description": "Read-only client portal (own pipeline) + feedback insert-only (RLS already enforces both principals); feedback signal tunes target_filters.",
+      "dependencies": ["f-135"],
+      "status": "not-started",
+      "evidence": ""
+    },
+    {
+      "id": "f-138",
+      "name": "Billing + daily digests",
+      "description": "Usage/billing + Resend daily digest at the operator/client configured time.",
+      "dependencies": ["f-136", "f-137"],
+      "status": "not-started",
+      "evidence": ""
+    }
+  ]
+}
