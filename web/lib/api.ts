@@ -2,6 +2,7 @@ import type {
   Client,
   ClientProfile,
   CampaignMatch,
+  JobHit,
   Membership,
   MatchActionValue,
   Principal,
@@ -46,6 +47,27 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+// Multipart upload: the browser must set Content-Type (with the boundary), so we
+// deliberately don't send the JSON header here. Shares error handling shape.
+async function upload<T>(path: string, body: FormData): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    credentials: "include",
+    body,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const b = (await res.json()) as { error?: string };
+      if (b?.error) detail = b.error;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as T;
+}
+
 export const api = {
   me: () => req<{ principal: Principal }>("/api/me"),
 
@@ -66,6 +88,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  uploadResume: (clientId: string, profileId: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return upload<ClientProfile>(`/api/clients/${clientId}/profiles/${profileId}/resume`, fd);
+  },
+
+  // Index search (f-134): a profile's embedding, or an ad-hoc text query.
+  profileJobs: (profileId: string) => req<JobHit[]>(`/api/profiles/${profileId}/jobs`),
+  searchJobs: (query: string) =>
+    req<JobHit[]>("/api/search", { method: "POST", body: JSON.stringify({ query }) }),
 
   listCampaignMatches: (campaignId: string) =>
     req<CampaignMatch[]>(`/api/campaigns/${campaignId}/matches`),
