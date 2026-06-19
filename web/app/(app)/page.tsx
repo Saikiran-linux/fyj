@@ -4,9 +4,16 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Topbar } from "@/components/topbar";
 import { CommandBar } from "@/components/command-bar";
-import { ActionCard } from "@/components/ui/card";
-import { Tabs } from "@/components/ui/tabs";
-import { Table, THead, TRow, TCell, EmptyRow } from "@/components/ui/table";
+import { ActionCard } from "@/components/action-card";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from "@/components/ui/table";
 import { Avatar } from "@/components/ui/avatar";
 import { Chip, statusTone } from "@/components/ui/chip";
 import { useSession } from "@/lib/auth-client";
@@ -40,7 +47,7 @@ export default function DashboardPage() {
     <>
       <Topbar />
       <div className="mx-auto max-w-5xl px-8 pb-16">
-        <h1 className="mb-5 mt-2 text-[28px] font-bold tracking-tight text-text">
+        <h1 className="mb-5 mt-2 font-heading text-[28px] font-bold tracking-tight text-foreground">
           Hey {firstName}, ready to get started?
         </h1>
 
@@ -54,38 +61,74 @@ export default function DashboardPage() {
 
         <div className="mt-10">
           <div className="mb-3">
-            <Tabs tabs={["All", "Recents", "Favorites"]} active={tab} onChange={setTab} />
+            <Tabs value={tab} onValueChange={setTab}>
+              <TabsList variant="line">
+                {["All", "Recents", "Favorites"].map((t) => (
+                  <TabsTrigger key={t} value={t}>
+                    {t}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
           </div>
 
-          <Table>
-            <THead cols={["Name", "Status", "Email", "Portal", "Created"]} />
-            <tbody>
-              {error && <EmptyRow colSpan={5} label={`Couldn’t load clients — ${error}`} />}
-              {!error && clients === null && <EmptyRow colSpan={5} label="Loading…" />}
-              {!error && clients?.length === 0 && (
-                <EmptyRow colSpan={5} label="No clients yet. Add your first one." />
-              )}
-              {clients?.map((c) => (
-                <TRow key={c.id}>
-                  <TCell>
-                    <button
-                      onClick={() => router.push(`/clients/${c.id}`)}
-                      className="flex items-center gap-2.5 font-medium text-text hover:text-primary"
-                    >
-                      <Avatar name={c.fullName} />
-                      {c.fullName}
-                    </button>
-                  </TCell>
-                  <TCell>
-                    <Chip tone={statusTone(c.status)}>{c.status}</Chip>
-                  </TCell>
-                  <TCell muted>{c.email ?? "—"}</TCell>
-                  <TCell muted>{c.portalEnabled ? "Enabled" : "Off"}</TCell>
-                  <TCell muted>{new Date(c.createdAt).toLocaleDateString()}</TCell>
-                </TRow>
-              ))}
-            </tbody>
-          </Table>
+          <div className="border border-border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  {["Name", "Status", "Email", "Portal", "Created"].map((c) => (
+                    <TableHead key={c}>{c}</TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {error && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
+                      Couldn’t load clients — {error}
+                    </TableCell>
+                  </TableRow>
+                )}
+                {!error && clients === null && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
+                      Loading…
+                    </TableCell>
+                  </TableRow>
+                )}
+                {!error && clients?.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
+                      No clients yet. Add your first one.
+                    </TableCell>
+                  </TableRow>
+                )}
+                {clients?.map((c) => (
+                  <TableRow key={c.id}>
+                    <TableCell>
+                      <button
+                        onClick={() => router.push(`/clients/${c.id}`)}
+                        className="flex items-center gap-2.5 font-medium text-foreground hover:text-primary"
+                      >
+                        <Avatar name={c.fullName} />
+                        {c.fullName}
+                      </button>
+                    </TableCell>
+                    <TableCell>
+                      <Chip tone={statusTone(c.status)}>{c.status}</Chip>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">{c.email ?? "—"}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {c.portalEnabled ? "Enabled" : "Off"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {new Date(c.createdAt).toLocaleDateString()}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         </div>
       </div>
     </>

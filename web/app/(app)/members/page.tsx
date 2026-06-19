@@ -5,7 +5,23 @@ import { Topbar } from "@/components/topbar";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Table, THead, TRow, TCell, EmptyRow } from "@/components/ui/table";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from "@/components/ui/table";
 import { Avatar } from "@/components/ui/avatar";
 import { Chip, statusTone } from "@/components/ui/chip";
 import { api } from "@/lib/api";
@@ -50,62 +66,84 @@ export default function MembersPage() {
       <Topbar title="Settings" />
       <div className="mx-auto max-w-4xl px-8 pb-16">
         <PageHeader title="Members" subtitle="Org staff and their roles. Admin only." />
-        {error && <p className="mb-4 text-sm text-danger">{error}</p>}
+        {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
 
-        <Card className="mb-5">
+        <Card className="mb-5 px-5">
           <form onSubmit={invite} className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-text-muted">User ID (Better Auth)</span>
-              <input
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="userId">User ID (Better Auth)</Label>
+              <Input
+                id="userId"
                 value={userId}
                 onChange={(e) => setUserId(e.target.value)}
-                className="h-9 w-72 rounded-sm border border-border bg-bg-subtle px-3 text-sm outline-none focus:border-primary/40 focus:bg-white"
+                className="w-72"
                 placeholder="usr_…"
               />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-text-muted">Role</span>
-              <select
-                value={role}
-                onChange={(e) => setRole(e.target.value as StaffRole)}
-                className="h-9 rounded-sm border border-border bg-bg-subtle px-3 text-sm outline-none focus:border-primary/40 focus:bg-white"
-              >
-                {ROLES.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </label>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>Role</Label>
+              <Select value={role} onValueChange={(v) => setRole(v as StaffRole)}>
+                <SelectTrigger className="h-8 w-36">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ROLES.map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {r}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <Button type="submit" disabled={busy}>
               {busy ? "Inviting…" : "Invite"}
             </Button>
           </form>
         </Card>
 
-        <Table>
-          <THead cols={["Member", "Role", "Status"]} />
-          <tbody>
-            {members === null && !error && <EmptyRow colSpan={3} label="Loading…" />}
-            {members?.length === 0 && <EmptyRow colSpan={3} label="No members." />}
-            {members?.map((m) => (
-              <TRow key={m.id}>
-                <TCell>
-                  <div className="flex items-center gap-2.5">
-                    <Avatar name={m.userId} />
-                    <span className="font-mono text-xs text-text-muted">{m.userId}</span>
-                  </div>
-                </TCell>
-                <TCell>
-                  <Chip tone={m.role === "admin" ? "info" : "neutral"}>{m.role}</Chip>
-                </TCell>
-                <TCell>
-                  <Chip tone={statusTone(m.status)}>{m.status}</Chip>
-                </TCell>
-              </TRow>
-            ))}
-          </tbody>
-        </Table>
+        <div className="border border-border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                {["Member", "Role", "Status"].map((c) => (
+                  <TableHead key={c}>{c}</TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {members === null && !error && (
+                <TableRow>
+                  <TableCell colSpan={3} className="py-10 text-center text-muted-foreground">
+                    Loading…
+                  </TableCell>
+                </TableRow>
+              )}
+              {members?.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={3} className="py-10 text-center text-muted-foreground">
+                    No members.
+                  </TableCell>
+                </TableRow>
+              )}
+              {members?.map((m) => (
+                <TableRow key={m.id}>
+                  <TableCell>
+                    <div className="flex items-center gap-2.5">
+                      <Avatar name={m.userId} />
+                      <span className="font-mono text-xs text-muted-foreground">{m.userId}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Chip tone={m.role === "admin" ? "info" : "neutral"}>{m.role}</Chip>
+                  </TableCell>
+                  <TableCell>
+                    <Chip tone={statusTone(m.status)}>{m.status}</Chip>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       </div>
     </>
   );

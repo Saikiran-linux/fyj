@@ -1,20 +1,25 @@
-import { cn } from "@/lib/cn";
+import { cn } from "@/lib/utils";
 
+/**
+ * Status chip — a semantic-tone badge. Built on the shadcn Badge look (same
+ * size/shape) but with success/warning/info tones the neutral base doesn't
+ * ship. `danger` maps to shadcn's `destructive`.
+ */
 type Tone = "success" | "warning" | "danger" | "info" | "neutral";
 
 const TONES: Record<Tone, string> = {
   success: "bg-success/12 text-success",
-  warning: "bg-warning/12 text-warning",
-  danger: "bg-danger/12 text-danger",
+  warning: "bg-warning/15 text-warning",
+  danger: "bg-destructive/12 text-destructive",
   info: "bg-info/12 text-info",
-  neutral: "bg-bg-subtle text-text-faint",
+  neutral: "bg-muted text-muted-foreground",
 };
 
 export function Chip({ tone = "neutral", children }: { tone?: Tone; children: React.ReactNode }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-medium",
+        "inline-flex h-5 w-fit shrink-0 items-center justify-center gap-1 px-2 py-0.5 text-xs font-medium whitespace-nowrap",
         TONES[tone],
       )}
     >

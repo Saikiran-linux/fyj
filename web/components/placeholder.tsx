@@ -17,9 +17,9 @@ export function Placeholder({
       <Topbar title={topbar ?? title} />
       <div className="mx-auto max-w-5xl px-8 pb-16">
         <PageHeader title={title} />
-        <Card className="flex flex-col items-center gap-2 py-14 text-center">
+        <Card className="flex flex-col items-center gap-2 px-6 py-14 text-center">
           <span className="text-2xl">🚧</span>
-          <p className="max-w-md text-sm text-text-muted">{note}</p>
+          <p className="max-w-md text-sm text-muted-foreground">{note}</p>
         </Card>
       </div>
     </>

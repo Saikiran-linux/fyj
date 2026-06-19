@@ -4,6 +4,19 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-19 — console UI migrated to shadcn (radix-nova) + @aliimam registry
+
+Full re-platform of `web/` onto **shadcn/ui** (CLI v4, `radix-nova`, base color neutral), keeping the prior decisions: **square corners (`--radius: 0`) + Source Sans Pro**.
+
+- **Foundation:** `shadcn init` → `components.json`, `lib/utils.ts` (cn = clsx+tailwind-merge), deps (clsx, tailwind-merge, cva, radix-ui, lucide-react, tw-animate-css). `globals.css` rewritten to a single shadcn token system (oklch neutral) + `success`/`warning`/`info` tokens for status chips; `--radius: 0` and a global `border-radius: 0 !important` keep everything square (incl. avatars). `layout.tsx` binds Source Sans Pro to `--font-sans`. Deleted `lib/cn.ts`.
+- **@aliimam registry** wired in `components.json` (`https://aliimam.in/r/{name}.json`) — verified it resolves (`shadcn view @aliimam/typewriter`). NB the correct CLI flow is `npx shadcn@latest add @aliimam/<item>` (there is no `registry add` subcommand). It's a 195-item marketing/landing kit (heroes, pricing, shaders…); none pulled yet — available on demand.
+- **Primitives** pulled from base shadcn: button, card, badge, input, label, textarea, select, tabs, table, separator, dropdown-menu. Custom composites rebuilt on them: `Chip` (semantic-tone badge), `Avatar` (initials), `ActionCard`, CommandBar, Topbar, Rail (lucide icons), PageHeader, Placeholder.
+- **Every screen** rewritten to shadcn components + tokens: dashboard (shadcn Tabs + Table), clients, client detail (resume upload intact), jobs, members (shadcn Select), campaign matches, sign-in.
+
+Gate: web `npm run typecheck` + `next build` green (11 routes). No Worker/API changes.
+
+---
+
 ## 2026-06-18 — f-134 fix: summarize-then-embed (match how JDs are embedded)
 
 The first f-134 cut embedded the **raw resume text**. The fyj index embeds jobs from their **LLM summary**, not the raw description (fyj_scanner `src/summarize.mjs` + `buildJobText` in `src/embeddings.mjs`; proof in `scripts/embed-resume.mjs`). Embedding raw prose sits in a different region of the space and ranks worse. Fixed to replicate the JD pipeline exactly:
