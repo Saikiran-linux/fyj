@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/ui/avatar";
 import { Chip, statusTone } from "@/components/ui/chip";
 import { api } from "@/lib/api";
@@ -45,7 +47,7 @@ export default function ClientDetailPage() {
     <>
       <Topbar title="Clients" />
       <div className="mx-auto max-w-5xl px-8 pb-16">
-        {error && <p className="mb-4 text-sm text-danger">{error}</p>}
+        {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
 
         <PageHeader
           title={client?.fullName ?? "Client"}
@@ -54,30 +56,32 @@ export default function ClientDetailPage() {
         />
 
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-          <Card className="lg:col-span-1">
+          <Card className="px-5 lg:col-span-1">
             <div className="flex items-center gap-3">
               <Avatar name={client?.fullName ?? "?"} size={40} />
               <div>
-                <div className="font-medium text-text">{client?.fullName ?? "—"}</div>
-                <div className="text-xs text-text-muted">
+                <div className="font-medium text-foreground">{client?.fullName ?? "—"}</div>
+                <div className="text-xs text-muted-foreground">
                   Portal {client?.portalEnabled ? "enabled" : "off"}
                 </div>
               </div>
             </div>
-            {client?.notes && <p className="mt-4 text-sm text-text-muted">{client.notes}</p>}
+            {client?.notes && <p className="mt-4 text-sm text-muted-foreground">{client.notes}</p>}
           </Card>
 
-          <Card className="lg:col-span-2">
+          <Card className="px-5 lg:col-span-2">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-[15px] font-semibold text-text">Targeting profiles</h2>
+              <h2 className="font-heading text-[15px] font-semibold text-foreground">
+                Targeting profiles
+              </h2>
             </div>
 
             <form onSubmit={addProfile} className="mb-4 flex items-end gap-2">
-              <input
+              <Input
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
                 placeholder="e.g. Senior Backend — remote EU"
-                className="h-9 flex-1 rounded-sm border border-border bg-bg-subtle px-3 text-sm outline-none focus:border-primary/40 focus:bg-white"
+                className="flex-1"
               />
               <Button type="submit" disabled={busy}>
                 {busy ? "Adding…" : "Add profile"}
@@ -85,24 +89,86 @@ export default function ClientDetailPage() {
             </form>
 
             <div className="divide-y divide-border">
-              {profiles === null && <p className="py-3 text-sm text-text-faint">Loading…</p>}
+              {profiles === null && <p className="py-3 text-sm text-muted-foreground">Loading…</p>}
               {profiles?.length === 0 && (
-                <p className="py-3 text-sm text-text-faint">
+                <p className="py-3 text-sm text-muted-foreground">
                   No profiles yet — add one to start a campaign.
                 </p>
               )}
               {profiles?.map((p) => (
-                <div key={p.id} className="flex items-center justify-between py-3">
-                  <span className="text-sm font-medium text-text">{p.label}</span>
-                  <Chip tone={p.embeddedAt ? "success" : "warning"}>
-                    {p.embeddedAt ? "embedded" : "needs embed"}
-                  </Chip>
-                </div>
+                <ProfileRow key={p.id} clientId={id} profile={p} onChange={loadProfiles} />
               ))}
             </div>
           </Card>
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * One targeting profile: shows embed status and lets staff upload a resume
+ * (PDF/DOCX/text). The upload route summarizes → embeds → flips the profile to
+ * "embedded", after which the job matches link is live.
+ */
+function ProfileRow({
+  clientId,
+  profile,
+  onChange,
+}: {
+  clientId: string;
+  profile: ClientProfile;
+  onChange: () => Promise<unknown>;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-uploading the same filename
+    if (!file) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.uploadResume(clientId, profile.id, file);
+      await onChange();
+    } catch (e2) {
+      setErr((e2 as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 py-3">
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium text-foreground">{profile.label}</div>
+        {err && <div className="mt-0.5 text-xs text-destructive">{err}</div>}
+      </div>
+      <div className="flex items-center gap-2">
+        {profile.embeddedAt && (
+          <Link
+            href={`/jobs?profile=${profile.id}`}
+            className="text-xs font-medium text-primary hover:underline"
+          >
+            View jobs →
+          </Link>
+        )}
+        <Chip tone={profile.embeddedAt ? "success" : "warning"}>
+          {busy ? "embedding…" : profile.embeddedAt ? "embedded" : "needs embed"}
+        </Chip>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".pdf,.docx,.txt,.md,application/pdf"
+          className="hidden"
+          onChange={onPick}
+        />
+        <Button variant="secondary" disabled={busy} onClick={() => fileRef.current?.click()}>
+          {profile.embeddedAt ? "Replace" : "Upload resume"}
+        </Button>
+      </div>
+    </div>
   );
 }

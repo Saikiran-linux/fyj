@@ -300,3 +300,70 @@ end $$;
 grant execute on function app.resolve_staff_memberships(text) to ops_app, ops_system;
 grant execute on function app.resolve_client_principal(text)  to ops_app, ops_system;
 grant execute on function app.bootstrap_org_for_user(text, text) to ops_app;
+
+
+-- ============================================================================
+-- Continuous matcher (f-135)
+-- ============================================================================
+-- The background matcher (cron + queue Worker) legitimately spans all orgs and
+-- writes campaign_matches WITHOUT a request principal — work RLS denies for
+-- ops_app, and which a synthetic principal can't satisfy (no real membership /
+-- can_access_client). Rather than a BYPASSRLS role (Neon's owner role can't
+-- grant BYPASSRLS via SQL), the matcher runs on the SAME ops_app connection and
+-- goes through these SECURITY DEFINER functions (owner = table owner, RLS-exempt,
+-- same trick as the resolvers above). They are the matcher's ONLY privileged
+-- path; ops_app still cannot touch the tables directly. Every write is scoped to
+-- one campaign — org_id/client_id are derived from the (verified) campaign id
+-- inside the function, never trusted from the caller — so a caller cannot write
+-- into another tenant. Only the id-listing spans orgs.
+
+create or replace function app.list_active_campaigns()
+  returns table (id uuid, org_id uuid)
+  language sql stable security definer set search_path = public, pg_temp as $$
+  select c.id, c.org_id from public.campaigns c where c.status = 'active'
+$$;
+
+-- One campaign's matching inputs: its 1:1 profile's embedding (as text — pgvector
+-- has no driver mapping over a raw RPC; the Worker JSON.parses it) + filters +
+-- the incremental watermark.
+create or replace function app.get_campaign_for_match(p_campaign_id uuid)
+  returns table (
+    campaign_id uuid, org_id uuid, client_id uuid,
+    last_run_at timestamptz, embedding text, target_filters jsonb
+  )
+  language sql stable security definer set search_path = public, pg_temp as $$
+  select c.id, c.org_id, c.client_id, c.last_run_at,
+         p.embedding::text, p.target_filters
+  from public.campaigns c
+  join public.client_profiles p on p.id = c.profile_id
+  where c.id = p_campaign_id
+$$;
+
+-- Surface a run's matches and advance the watermark atomically. p_matches is a
+-- jsonb array of {jobId, companyId, score, rank}; org_id/client_id come from the
+-- campaign, not the payload. Dedup on (campaign_id, job_id). Always bumps
+-- last_run_at, so an empty run still advances the incremental window.
+create or replace function app.record_campaign_run(p_campaign_id uuid, p_matches jsonb)
+  returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_org uuid; v_client uuid;
+begin
+  select org_id, client_id into v_org, v_client
+    from public.campaigns where id = p_campaign_id;
+  if not found then return; end if;
+
+  if jsonb_array_length(coalesce(p_matches, '[]'::jsonb)) > 0 then
+    insert into public.campaign_matches
+      (org_id, client_id, campaign_id, job_id, company_id, score, rank)
+    select v_org, v_client, p_campaign_id,
+           (m->>'jobId')::uuid, (m->>'companyId')::uuid,
+           (m->>'score')::double precision, (m->>'rank')::int
+    from jsonb_array_elements(p_matches) as m
+    on conflict (campaign_id, job_id) do nothing;
+  end if;
+
+  update public.campaigns set last_run_at = now() where id = p_campaign_id;
+end $$;
+
+grant execute on function app.list_active_campaigns()           to ops_app, ops_system;
+grant execute on function app.get_campaign_for_match(uuid)      to ops_app, ops_system;
+grant execute on function app.record_campaign_run(uuid, jsonb)  to ops_app, ops_system;

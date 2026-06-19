@@ -5,8 +5,19 @@ import { createAuth } from "./auth";
 import { resolvePrincipal } from "./principal";
 import * as repo from "./db/repo";
 import { matchAction, feedbackSignal, memberRole } from "./db/schema";
+import { parseResume } from "./resume";
+import { embedText, embedRaw } from "./embeddings";
+import { summarizeResume } from "./summarize";
+import { searchAndHydrate, type JobFilters } from "./index-client";
 
 type Vars = { db: DB; principal: Principal };
+
+/** Minimal Blob/File shape for an uploaded multipart part (see resume route). */
+interface UploadedFile {
+  name: string;
+  type: string;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
 
 const isStaff = (p: Principal): p is Extract<Principal, { principal: "staff" }> =>
   p.principal === "staff";
@@ -110,6 +121,89 @@ export function createApi() {
       targetFilters: body.targetFilters ?? {},
     });
     return c.json(row, 201);
+  });
+
+  // ── resume upload → R2 → parse → embed (f-134) ───────────────────────
+  // multipart/form-data with a `file` field. We store the original bytes in R2,
+  // extract text (PDF/DOCX/text), embed it into the index's vector space, and
+  // persist embedding + parsedProfile onto the profile so it becomes matchable.
+  app.post("/api/clients/:id/profiles/:profileId/resume", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+
+    const clientId = c.req.param("id");
+    const profileId = c.req.param("profileId");
+
+    // RLS-checked read: only resolves if this staff can access the client's profile.
+    const profile = await repo.getProfile(c.get("db"), p, profileId);
+    if (!profile || profile.clientId !== clientId) return c.json({ error: "not_found" }, 404);
+
+    const form = await c.req.formData().catch(() => null);
+    // The uploaded part is a Blob/File; workers-types narrows FormData.get to
+    // `string | null`, so treat it as unknown and structurally check it.
+    const file = form?.get("file") as UploadedFile | string | null | undefined;
+    if (!file || typeof file === "string" || typeof file.arrayBuffer !== "function") {
+      return c.json({ error: "file required" }, 400);
+    }
+
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (bytes.byteLength === 0) return c.json({ error: "empty file" }, 400);
+
+    const parsed = await parseResume(bytes, file.name, file.type || null);
+    if (!parsed.text.trim()) return c.json({ error: "no text extracted from resume" }, 422);
+
+    // R2 key namespaced by tenant so listings/lifecycle stay org-scoped.
+    const storagePath = `resumes/${p.orgId}/${clientId}/${profileId}/${file.name}`;
+    await c.env.RESUMES.put(storagePath, bytes, {
+      httpMetadata: { contentType: file.type || "application/octet-stream" },
+    });
+
+    // Match how the index embeds JOBS: summarize the resume into the same
+    // JD-style 14-field precis + title/signal prelude (src/summarize.ts mirrors
+    // fyj_scanner's summarize.mjs + buildJobText), then embed that VERBATIM so
+    // the resume lands in the job vector distribution. Embedding raw prose would
+    // rank worse — jobs.embedding comes from the summary, not the description.
+    const summary = await summarizeResume(c.env, parsed.text);
+    const { embedding, model } = await embedRaw(c.env, summary.embedInput);
+    const row = await repo.attachResume(c.get("db"), p, profileId, {
+      resumeStoragePath: storagePath,
+      resumeText: parsed.text,
+      parsedProfile: {
+        ...parsed.profile,
+        kind: parsed.kind,
+        title: summary.title,
+        summary: summary.summary,
+      },
+      embedding,
+      embeddingModel: model,
+    });
+    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  // ── index search (f-134) ─────────────────────────────────────────────
+  // Match a profile's embedding against the index, hydrated for display. The
+  // embedding is a tenant resource, so it's read through the repository (RLS).
+  app.get("/api/profiles/:id/jobs", async (c) => {
+    const profile = await repo.getProfile(c.get("db"), c.get("principal"), c.req.param("id"));
+    if (!profile) return c.json({ error: "not_found" }, 404);
+    if (!profile.embedding) return c.json({ error: "profile_not_embedded" }, 409);
+    const filters: JobFilters = {
+      ...(profile.targetFilters as JobFilters),
+      limit: 50,
+    };
+    const hits = await searchAndHydrate(c.env, profile.embedding as number[], filters);
+    return c.json(hits);
+  });
+
+  // Ad-hoc text search (dashboard command bar / Jobs free search): embed the
+  // query string on the fly, then the same hydrated index search.
+  app.post("/api/search", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { query?: string; filters?: JobFilters };
+    const query = body.query?.trim();
+    if (!query) return c.json({ error: "query required" }, 400);
+    const { embedding } = await embedText(c.env, query);
+    const hits = await searchAndHydrate(c.env, embedding, { limit: 50, ...(body.filters ?? {}) });
+    return c.json(hits);
   });
 
   // ── campaign matches (curation) ──────────────────────────────────────

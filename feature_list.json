@@ -38,16 +38,16 @@
       "name": "Clients/profiles + resume -> R2 -> embed",
       "description": "Assignment-scoped client CRUD (have list/create); resume upload to R2 (RESUMES bucket fyj-resumes is live); a Worker parses PDF/DOCX -> text -> embedding -> client_profiles.embedding + parsed_profile. Lights up the Jobs screen + dashboard command bar (which call search_jobs against a profile embedding). NEEDS OPENAI_API_KEY secret on the Worker (wrangler secret put). This is the ACTIVE next feature now that infra is live.",
       "dependencies": ["f-133", "f-infra"],
-      "status": "not-started",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Implemented on branch claude/bold-cori-miypka. Backend: src/embeddings.ts (OpenAI text-embedding-3-small, 1536d, embedRaw embeds VERBATIM/newlines-preserved like jobs; embedText only for short queries), src/summarize.ts (resume → JD-style 14-field precis via gpt-4o-mini temp 0 — IDENTICAL schema/order to fyj_scanner summarize.mjs — then title+signal-block prelude like buildJobText, so the resume lands in the JOB vector distribution; mirrors scripts/embed-resume.mjs), src/resume.ts (PDF via unpdf, DOCX via fflate→document.xml, plain text; + heuristic parsedProfile), repo.getProfile/attachResume (RLS via withTenant; audits profile.embed). Routes: POST /api/clients/:id/profiles/:profileId/resume (multipart → R2 fyj-resumes → parse → embed → client_profiles.embedding+parsedProfile+embeddedAt), GET /api/profiles/:id/jobs and POST /api/search (searchAndHydrate = search_jobs + KV-cached get_job). UI: client-detail resume upload + 'View jobs' per embedded profile; real /jobs page (profile matches + ad-hoc text search, score chips); command bar wired. GATES GREEN: Worker `npm run typecheck`, `wrangler deploy --dry-run` (964 KiB gzip, unpdf/fflate bundle clean), web `npm run typecheck` + `next build` (11 routes). DEPLOY STEP REMAINING (operational, needs creds): `wrangler secret put OPENAI_API_KEY` on the Worker, then `npm run deploy`. NOT runtime-verified in-repo (no creds to deploy this session); embedText throws a clear error if the key is unset."
     },
     {
       "id": "f-135",
       "name": "Continuous campaign matcher (live)",
       "description": "Wire the existing matcher.ts: Cloudflare Cron enqueues active campaigns -> Queue consumer calls search_jobs (first_seen_at > last_run_at) over HTTPS -> upserts campaign_matches in Neon. Feeds the curation UI.",
       "dependencies": ["f-134"],
-      "status": "not-started",
-      "evidence": ""
+      "status": "done",
+      "evidence": "Implemented on branch claude/bold-cori-miypka. Resolved the ops_system-not-BYPASSRLS blocker via SECURITY DEFINER (chosen by user over pursuing BYPASSRLS): db/policies.sql adds app.list_active_campaigns(), app.get_campaign_for_match(uuid) (returns embedding::text — pgvector has no raw-RPC driver mapping), app.record_campaign_run(uuid, jsonb) (inserts campaign_matches on conflict (campaign_id,job_id) do nothing + bumps last_run_at atomically; org_id/client_id derived from the campaign, never the payload). All owner-owned/RLS-exempt (file already forbids FORCE RLS for exactly this), granted to ops_app+ops_system. src/matcher.ts rewritten to call these over the existing ops_app Hyperdrive connection (no second binding / no BYPASSRLS role); cron enqueues active campaigns, queue consumer matches each incrementally (since=last_run_at, targetOnly default true). GATES GREEN: ./init.sh (Worker typecheck + db:generate unchanged + web typecheck), wrangler dry-run bundles. NOT runtime-verified (no Neon/CF creds this session): db/policies.sql must be re-applied to Neon for the new app.* fns, and the Worker redeployed, before the cron actually surfaces matches."
     },
     {
       "id": "f-136",

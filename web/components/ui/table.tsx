@@ -1,60 +1,116 @@
-import { cn } from "@/lib/cn";
+"use client"
 
-export function Table({ children }: { children: React.ReactNode }) {
+import * as React from "react"
+
+import { cn } from "@/lib/utils"
+
+function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-white">
-      <table className="w-full border-collapse text-sm">{children}</table>
+    <div
+      data-slot="table-container"
+      className="relative w-full overflow-x-auto"
+    >
+      <table
+        data-slot="table"
+        className={cn("w-full caption-bottom text-sm", className)}
+        {...props}
+      />
     </div>
-  );
+  )
 }
 
-export function THead({ cols }: { cols: string[] }) {
+function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
   return (
-    <thead>
-      <tr className="border-b border-border">
-        {cols.map((c) => (
-          <th
-            key={c}
-            className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-text-faint"
-          >
-            {c}
-          </th>
-        ))}
-      </tr>
-    </thead>
-  );
+    <thead
+      data-slot="table-header"
+      className={cn("[&_tr]:border-b", className)}
+      {...props}
+    />
+  )
 }
 
-export function TRow({ children }: { children: React.ReactNode }) {
+function TableBody({ className, ...props }: React.ComponentProps<"tbody">) {
   return (
-    <tr className="group border-b border-border last:border-0 transition-colors hover:bg-bg-subtle">
-      {children}
-    </tr>
-  );
+    <tbody
+      data-slot="table-body"
+      className={cn("[&_tr:last-child]:border-0", className)}
+      {...props}
+    />
+  )
 }
 
-export function TCell({
-  children,
-  muted,
+function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
+  return (
+    <tfoot
+      data-slot="table-footer"
+      className={cn(
+        "border-t bg-muted/50 font-medium [&>tr]:last:border-b-0",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
+  return (
+    <tr
+      data-slot="table-row"
+      className={cn(
+        "border-b transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function TableHead({ className, ...props }: React.ComponentProps<"th">) {
+  return (
+    <th
+      data-slot="table-head"
+      className={cn(
+        "h-10 px-2 text-left align-middle font-medium whitespace-nowrap text-foreground [&:has([role=checkbox])]:pr-0",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function TableCell({ className, ...props }: React.ComponentProps<"td">) {
+  return (
+    <td
+      data-slot="table-cell"
+      className={cn(
+        "p-2 align-middle whitespace-nowrap [&:has([role=checkbox])]:pr-0",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function TableCaption({
   className,
-}: {
-  children: React.ReactNode;
-  muted?: boolean;
-  className?: string;
-}) {
+  ...props
+}: React.ComponentProps<"caption">) {
   return (
-    <td className={cn("px-4 py-3 align-middle", muted && "text-text-muted", className)}>
-      {children}
-    </td>
-  );
+    <caption
+      data-slot="table-caption"
+      className={cn("mt-4 text-sm text-muted-foreground", className)}
+      {...props}
+    />
+  )
 }
 
-export function EmptyRow({ colSpan, label }: { colSpan: number; label: string }) {
-  return (
-    <tr>
-      <td colSpan={colSpan} className="px-4 py-10 text-center text-sm text-text-faint">
-        {label}
-      </td>
-    </tr>
-  );
+export {
+  Table,
+  TableHeader,
+  TableBody,
+  TableFooter,
+  TableHead,
+  TableRow,
+  TableCell,
+  TableCaption,
 }
