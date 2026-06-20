@@ -86,6 +86,32 @@ alter table public.placements       enable row level security;
 alter table public.feedback         enable row level security;
 alter table public.audit_log        enable row level security;
 
+-- ── Better Auth tables (user / session / account / verification) ──────────
+-- These are touched ONLY by the Worker as `ops_app` via Better Auth — never by
+-- end-users directly, and never by the Neon Data API. Neon's Data API enables
+-- RLS across the entire public schema; with RLS ON and NO policy these tables
+-- fail CLOSED, so `ops_app` (non-BYPASSRLS) sees ZERO rows. That silently breaks
+-- auth: sign-in reads `account` → 0 rows → "Invalid email or password" even when
+-- the password is correct, and sign-up's INSERT into `user` is denied →
+-- FAILED_TO_CREATE_USER. Fix: keep RLS ENABLED (so the Data API roles anon/
+-- authenticated stay denied — they get no policy here, so the password hashes in
+-- `account` are never exposed over REST) and grant full row access to `ops_app`
+-- only. `with check (true)` so Better Auth's inserts/updates pass too.
+alter table public."user"        enable row level security;
+alter table public.session       enable row level security;
+alter table public.account       enable row level security;
+alter table public.verification  enable row level security;
+
+drop policy if exists auth_user_ops_app          on public."user";
+drop policy if exists auth_session_ops_app        on public.session;
+drop policy if exists auth_account_ops_app        on public.account;
+drop policy if exists auth_verification_ops_app   on public.verification;
+
+create policy auth_user_ops_app          on public."user"        for all to ops_app using (true) with check (true);
+create policy auth_session_ops_app        on public.session       for all to ops_app using (true) with check (true);
+create policy auth_account_ops_app        on public.account       for all to ops_app using (true) with check (true);
+create policy auth_verification_ops_app   on public.verification  for all to ops_app using (true) with check (true);
+
 -- ── organizations ─────────────────────────────────────────────────────
 drop policy if exists organizations_select on public.organizations;
 create policy organizations_select on public.organizations for select
