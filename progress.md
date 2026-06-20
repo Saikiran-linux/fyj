@@ -4,6 +4,18 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-20 — AUTH FIX: RLS on Better Auth tables blocked all logins
+
+**Symptom:** "can't log in even with correct creds." **Root cause:** `user`/`session`/`account`/`verification` (the Better Auth tables) had **RLS enabled but ZERO policies**. `ops_app` is non-BYPASSRLS, so RLS-on + no-policy = every row denied → sign-in reads `account` → 0 rows → "Invalid email or password" (even when correct); sign-up's INSERT into `user` denied → `FAILED_TO_CREATE_USER`. Verified via the WS driver: as `neondb_owner` the user row is visible; as `ops_app` the same query returned `[]`.
+
+**Why now:** `db/policies.sql` only RLS-enables the *app* tables — it never touched the auth tables. The **Neon Data API** is enabled on this project (`authenticated`/`authenticator` roles exist), and switching it on enables RLS across the whole `public` schema, sweeping up Better Auth's tables (which ship no policies). The existing user + 2 sessions were created on 06-18, before the Data API flipped RLS on.
+
+**Fix (in `db/policies.sql`, idempotent):** keep RLS **enabled** on the 4 auth tables (so the Data API roles stay denied — password hashes in `account` are never exposed over REST) and add a policy `for all to ops_app using (true) with check (true)` on each. Re-applied to prod Neon. **Verified end-to-end:** `ops_app` now sees the user/account rows; a throwaway `sign-up/email` returns **200** with `__Secure-better-auth.session_token` (`SameSite=None; Secure; Partitioned; HttpOnly`), and `get-session` resolves the user. Test account + its bootstrapped org cleaned up afterward (only the real user/org remain).
+
+NB the session cookie is correctly cross-site (`SameSite=None; Partitioned`). If a browser with third-party-cookie blocking still won't persist the session, the durable fix is a same-site custom domain for UI+API (separate follow-up).
+
+---
+
 ## 2026-06-20 — f-134 + f-135 DEPLOYED LIVE (runtime-verified)
 
 The two "code-done, needs creds" carryovers are now **live on prod** and smoke-tested. User provided an OpenAI key, a Cloudflare User API token, and the Neon `neondb_owner` connection string for a one-off ops pass.
