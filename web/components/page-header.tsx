@@ -10,8 +10,8 @@ export function PageHeader({
   return (
     <div className="mb-6 flex items-end justify-between">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight text-text">{title}</h1>
-        {subtitle && <p className="mt-1 text-sm text-text-muted">{subtitle}</p>}
+        <h1 className="font-heading text-2xl font-bold tracking-tight text-foreground">{title}</h1>
+        {subtitle && <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>}
       </div>
       {action}
     </div>

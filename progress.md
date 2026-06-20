@@ -4,6 +4,48 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-20 — AUTH FIX: RLS on Better Auth tables blocked all logins
+
+**Symptom:** "can't log in even with correct creds." **Root cause:** `user`/`session`/`account`/`verification` (the Better Auth tables) had **RLS enabled but ZERO policies**. `ops_app` is non-BYPASSRLS, so RLS-on + no-policy = every row denied → sign-in reads `account` → 0 rows → "Invalid email or password" (even when correct); sign-up's INSERT into `user` denied → `FAILED_TO_CREATE_USER`. Verified via the WS driver: as `neondb_owner` the user row is visible; as `ops_app` the same query returned `[]`.
+
+**Why now:** `db/policies.sql` only RLS-enables the *app* tables — it never touched the auth tables. The **Neon Data API** is enabled on this project (`authenticated`/`authenticator` roles exist), and switching it on enables RLS across the whole `public` schema, sweeping up Better Auth's tables (which ship no policies). The existing user + 2 sessions were created on 06-18, before the Data API flipped RLS on.
+
+**Fix (in `db/policies.sql`, idempotent):** keep RLS **enabled** on the 4 auth tables (so the Data API roles stay denied — password hashes in `account` are never exposed over REST) and add a policy `for all to ops_app using (true) with check (true)` on each. Re-applied to prod Neon. **Verified end-to-end:** `ops_app` now sees the user/account rows; a throwaway `sign-up/email` returns **200** with `__Secure-better-auth.session_token` (`SameSite=None; Secure; Partitioned; HttpOnly`), and `get-session` resolves the user. Test account + its bootstrapped org cleaned up afterward (only the real user/org remain).
+
+NB the session cookie is correctly cross-site (`SameSite=None; Partitioned`). If a browser with third-party-cookie blocking still won't persist the session, the durable fix is a same-site custom domain for UI+API (separate follow-up).
+
+---
+
+## 2026-06-20 — f-134 + f-135 DEPLOYED LIVE (runtime-verified)
+
+The two "code-done, needs creds" carryovers are now **live on prod** and smoke-tested. User provided an OpenAI key, a Cloudflare User API token, and the Neon `neondb_owner` connection string for a one-off ops pass.
+
+**Environment note for next session:** this container's egress allows **HTTPS (443) only** — raw Postgres **5432 is blocked**, so `npm run db:policies` (psql) does **not** work here. Applied `db/policies.sql` instead via the **Neon serverless WebSocket driver** (`@neondatabase/serverless` + `ws`, installed `--no-save` so `package.json` is untouched): connect `Pool`, `begin; <whole file>; commit`. psql meta-command-free file, so a single simple-query call runs it. Same trick works for any future DDL from here.
+
+What ran:
+- **OpenAI** → `wrangler secret put OPENAI_API_KEY` on `fyj-ops-console`. Verified the key independently: `text-embedding-3-small` returns 1536-dim. f-134 resume→embed path is unblocked.
+- **policies.sql** → applied to Neon (idempotent). Confirmed the 3 f-135 functions now exist, `prosecdef=true`, execute granted to `ops_app`+`ops_system`. Pre-existing schema already had `client_profiles.embedding/parsed_profile/embedded_at` + `campaign_matches` + roles `ops_app`/`ops_system` (f-134/infra migrations were already applied; note `drizzle.__drizzle_migrations` table is absent — schema was pushed, not migrate-tracked).
+- **Worker** → `wrangler deploy` (version `ce041109-0fa6-45a0-98f0-e592f2a13dab`), bindings intact (Hyperdrive, R2 `fyj-resumes`, `MATCH_QUEUE`, KV `JOB_CACHE`), cron `17 * * * *` armed. Live at `https://fyj-ops-console.saikiran13055.workers.dev`.
+
+Smoke tests (all green): `/api/health` → 401 (auth live, not a crash); OpenAI embeddings → 1536d; **`ops_app` (non-BYPASSRLS) executes `app.list_active_campaigns()`** → 0 active campaigns (expected — none activated yet). This proves the SECURITY DEFINER matcher path works from the actual request role.
+
+**To watch:** the hourly cron now runs for real; it'll be a no-op until a campaign is set active and its profile has an embedding (upload a resume → embeds → matcher surfaces `campaign_matches`). Secrets used in this pass (OpenAI key, CF token, Neon password) were shared in chat — **rotate them.** `ANTHROPIC_API_KEY` is still unset on the Worker (needed for f-136 A–G eval, not yet).
+
+---
+
+## 2026-06-19 — console UI migrated to shadcn (radix-nova) + @aliimam registry
+
+Full re-platform of `web/` onto **shadcn/ui** (CLI v4, `radix-nova`, base color neutral), keeping the prior decisions: **square corners (`--radius: 0`) + Source Sans Pro**.
+
+- **Foundation:** `shadcn init` → `components.json`, `lib/utils.ts` (cn = clsx+tailwind-merge), deps (clsx, tailwind-merge, cva, radix-ui, lucide-react, tw-animate-css). `globals.css` rewritten to a single shadcn token system (oklch neutral) + `success`/`warning`/`info` tokens for status chips; `--radius: 0` and a global `border-radius: 0 !important` keep everything square (incl. avatars). `layout.tsx` binds Source Sans Pro to `--font-sans`. Deleted `lib/cn.ts`.
+- **@aliimam registry** wired in `components.json` (`https://aliimam.in/r/{name}.json`) — verified it resolves (`shadcn view @aliimam/typewriter`). NB the correct CLI flow is `npx shadcn@latest add @aliimam/<item>` (there is no `registry add` subcommand). It's a 195-item marketing/landing kit (heroes, pricing, shaders…); none pulled yet — available on demand.
+- **Primitives** pulled from base shadcn: button, card, badge, input, label, textarea, select, tabs, table, separator, dropdown-menu. Custom composites rebuilt on them: `Chip` (semantic-tone badge), `Avatar` (initials), `ActionCard`, CommandBar, Topbar, Rail (lucide icons), PageHeader, Placeholder.
+- **Every screen** rewritten to shadcn components + tokens: dashboard (shadcn Tabs + Table), clients, client detail (resume upload intact), jobs, members (shadcn Select), campaign matches, sign-in.
+
+Gate: web `npm run typecheck` + `next build` green (11 routes). No Worker/API changes.
+
+---
+
 ## 2026-06-18 — f-134 fix: summarize-then-embed (match how JDs are embedded)
 
 The first f-134 cut embedded the **raw resume text**. The fyj index embeds jobs from their **LLM summary**, not the raw description (fyj_scanner `src/summarize.mjs` + `buildJobText` in `src/embeddings.mjs`; proof in `scripts/embed-resume.mjs`). Embedding raw prose sits in a different region of the space and ranks worse. Fixed to replicate the JD pipeline exactly:

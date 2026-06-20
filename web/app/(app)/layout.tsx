@@ -14,7 +14,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }, [isPending, data, router]);
 
   if (isPending) {
-    return <div className="flex h-screen items-center justify-center text-text-faint">Loading…</div>;
+    return (
+      <div className="flex h-screen items-center justify-center text-muted-foreground">Loading…</div>
+    );
   }
   if (!data) return null; // redirecting
 
