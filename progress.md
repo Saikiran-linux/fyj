@@ -4,6 +4,23 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-20 — f-134 + f-135 DEPLOYED LIVE (runtime-verified)
+
+The two "code-done, needs creds" carryovers are now **live on prod** and smoke-tested. User provided an OpenAI key, a Cloudflare User API token, and the Neon `neondb_owner` connection string for a one-off ops pass.
+
+**Environment note for next session:** this container's egress allows **HTTPS (443) only** — raw Postgres **5432 is blocked**, so `npm run db:policies` (psql) does **not** work here. Applied `db/policies.sql` instead via the **Neon serverless WebSocket driver** (`@neondatabase/serverless` + `ws`, installed `--no-save` so `package.json` is untouched): connect `Pool`, `begin; <whole file>; commit`. psql meta-command-free file, so a single simple-query call runs it. Same trick works for any future DDL from here.
+
+What ran:
+- **OpenAI** → `wrangler secret put OPENAI_API_KEY` on `fyj-ops-console`. Verified the key independently: `text-embedding-3-small` returns 1536-dim. f-134 resume→embed path is unblocked.
+- **policies.sql** → applied to Neon (idempotent). Confirmed the 3 f-135 functions now exist, `prosecdef=true`, execute granted to `ops_app`+`ops_system`. Pre-existing schema already had `client_profiles.embedding/parsed_profile/embedded_at` + `campaign_matches` + roles `ops_app`/`ops_system` (f-134/infra migrations were already applied; note `drizzle.__drizzle_migrations` table is absent — schema was pushed, not migrate-tracked).
+- **Worker** → `wrangler deploy` (version `ce041109-0fa6-45a0-98f0-e592f2a13dab`), bindings intact (Hyperdrive, R2 `fyj-resumes`, `MATCH_QUEUE`, KV `JOB_CACHE`), cron `17 * * * *` armed. Live at `https://fyj-ops-console.saikiran13055.workers.dev`.
+
+Smoke tests (all green): `/api/health` → 401 (auth live, not a crash); OpenAI embeddings → 1536d; **`ops_app` (non-BYPASSRLS) executes `app.list_active_campaigns()`** → 0 active campaigns (expected — none activated yet). This proves the SECURITY DEFINER matcher path works from the actual request role.
+
+**To watch:** the hourly cron now runs for real; it'll be a no-op until a campaign is set active and its profile has an embedding (upload a resume → embeds → matcher surfaces `campaign_matches`). Secrets used in this pass (OpenAI key, CF token, Neon password) were shared in chat — **rotate them.** `ANTHROPIC_API_KEY` is still unset on the Worker (needed for f-136 A–G eval, not yet).
+
+---
+
 ## 2026-06-19 — console UI migrated to shadcn (radix-nova) + @aliimam registry
 
 Full re-platform of `web/` onto **shadcn/ui** (CLI v4, `radix-nova`, base color neutral), keeping the prior decisions: **square corners (`--radius: 0`) + Source Sans Pro**.
