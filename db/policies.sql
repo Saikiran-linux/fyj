@@ -393,3 +393,142 @@ end $$;
 grant execute on function app.list_active_campaigns()           to ops_app, ops_system;
 grant execute on function app.get_campaign_for_match(uuid)      to ops_app, ops_system;
 grant execute on function app.record_campaign_run(uuid, jsonb)  to ops_app, ops_system;
+
+
+-- ============================================================================
+-- Operator dashboard analytics (f-139 dashboard)
+-- ============================================================================
+-- The dashboard shows ORG-WIDE rollups (KPIs, funnel, a per-operator
+-- leaderboard, 30-day trends, an activity feed). These legitimately span every
+-- client/operator in the org — which the request-path role (operator) cannot
+-- read directly, because `can_access_client` limits an operator to their own
+-- book, and `audit_log` is admin-select-only. So, exactly like the resolvers /
+-- matcher above, these run as SECURITY DEFINER (owner, RLS-exempt) but are
+-- pinned to the CALLER'S org via the `app.org_id` GUC and gated to staff via
+-- `app.current_principal()`. A non-staff caller (or a missing GUC) yields zero
+-- rows. They never read another tenant's data: org_id comes from the verified
+-- principal's GUC, never from a parameter.
+
+-- Headline KPIs (single row). placements_mtd = placements that reached 'placed'
+-- this month; response_rate = % of applied placements that advanced to an
+-- interview-or-better stage; live_applications = in-flight placements;
+-- awaiting_review = new (unactioned) campaign matches.
+create or replace function app.org_kpis()
+  returns table (placements_mtd int, response_rate int, live_applications int, awaiting_review int)
+  language sql stable security definer set search_path = public, pg_temp as $$
+  select
+    (select count(*) from public.placements p
+       where p.org_id = app.current_org_id()
+         and p.status = 'placed'
+         and p.updated_at >= date_trunc('month', now()))::int,
+    (select coalesce(round(100.0
+        * count(*) filter (where status in ('interview','offer','placed'))
+        / nullif(count(*) filter (where status in ('applied','screening','interview','offer','placed')), 0)), 0)
+       from public.placements where org_id = app.current_org_id())::int,
+    (select count(*) from public.placements
+       where org_id = app.current_org_id() and status in ('applied','screening','interview','offer'))::int,
+    (select count(*) from public.campaign_matches
+       where org_id = app.current_org_id() and action = 'new')::int
+  where app.current_principal() = 'staff'
+$$;
+
+-- Conversion funnel (ordered). Counts flow from surfaced matches → reviewed →
+-- applied → responded → interview → placed.
+create or replace function app.org_funnel()
+  returns table (label text, value int, ord int)
+  language sql stable security definer set search_path = public, pg_temp as $$
+  select * from (values
+    ('Matches surfaced', (select count(*) from public.campaign_matches where org_id = app.current_org_id())::int, 1),
+    ('Reviewed',         (select count(*) from public.campaign_matches where org_id = app.current_org_id() and action <> 'new')::int, 2),
+    ('Applied',          (select count(*) from public.placements where org_id = app.current_org_id() and applied_at is not null)::int, 3),
+    ('Responded',        (select count(*) from public.placements where org_id = app.current_org_id() and status in ('screening','interview','offer','placed'))::int, 4),
+    ('Interview',        (select count(*) from public.placements where org_id = app.current_org_id() and status in ('interview','offer','placed'))::int, 5),
+    ('Placed',           (select count(*) from public.placements where org_id = app.current_org_id() and status = 'placed')::int, 6)
+  ) as f(label, value, ord)
+  where app.current_principal() = 'staff'
+$$;
+
+-- Per-operator leaderboard for the org (admin + operator seats). All counts are
+-- scoped to clients assigned to that operator.
+create or replace function app.operator_stats()
+  returns table (
+    user_id text, name text, email text,
+    candidate_count int, matches_awaiting int, applications_week int,
+    response_rate int, placements_mtd int
+  )
+  language sql stable security definer set search_path = public, pg_temp as $$
+  select
+    m.user_id, u.name, u.email,
+    (select count(*) from public.clients c
+       where c.org_id = m.org_id and c.assigned_operator_id = m.user_id)::int,
+    (select count(*) from public.campaign_matches cm
+       join public.clients c on c.id = cm.client_id
+       where cm.org_id = m.org_id and c.assigned_operator_id = m.user_id and cm.action = 'new')::int,
+    (select count(*) from public.placements p
+       join public.clients c on c.id = p.client_id
+       where p.org_id = m.org_id and c.assigned_operator_id = m.user_id
+         and p.applied_at >= now() - interval '7 days')::int,
+    (select coalesce(round(100.0
+        * count(*) filter (where p.status in ('interview','offer','placed'))
+        / nullif(count(*) filter (where p.status in ('applied','screening','interview','offer','placed')), 0)), 0)
+       from public.placements p join public.clients c on c.id = p.client_id
+       where p.org_id = m.org_id and c.assigned_operator_id = m.user_id)::int,
+    (select count(*) from public.placements p
+       join public.clients c on c.id = p.client_id
+       where p.org_id = m.org_id and c.assigned_operator_id = m.user_id
+         and p.status = 'placed' and p.updated_at >= date_trunc('month', now()))::int
+  from public.memberships m
+  left join public."user" u on u.id = m.user_id
+  where m.org_id = app.current_org_id()
+    and m.status = 'active'
+    and m.role in ('admin','operator')
+    and app.current_principal() = 'staff'
+  order by 8 desc, 4 desc
+$$;
+
+-- 30-day daily series for applications / responses / placements, computed from
+-- live placement timestamps (no rollup table needed). Zero-filled per day.
+create or replace function app.org_trends()
+  returns table (day date, applications int, responses int, placements int)
+  language sql stable security definer set search_path = public, pg_temp as $$
+  with days as (
+    select generate_series(
+      date_trunc('day', now()) - interval '29 days',
+      date_trunc('day', now()), interval '1 day')::date as d
+  )
+  select d.d,
+    (select count(*) from public.placements p
+       where p.org_id = app.current_org_id() and p.applied_at::date = d.d)::int,
+    (select count(*) from public.placements p
+       where p.org_id = app.current_org_id()
+         and p.status in ('screening','interview','offer','placed') and p.updated_at::date = d.d)::int,
+    (select count(*) from public.placements p
+       where p.org_id = app.current_org_id() and p.status = 'placed' and p.updated_at::date = d.d)::int
+  from days d
+  where app.current_principal() = 'staff'
+  order by d.d
+$$;
+
+-- Recent activity feed from the audit log (admin-select-only via RLS, so read it
+-- here for any staff seat, org-scoped).
+create or replace function app.org_activity(p_limit int default 12)
+  returns table (
+    id uuid, action text, entity_type text,
+    actor_user_id text, actor_name text, metadata jsonb, created_at timestamptz
+  )
+  language sql stable security definer set search_path = public, pg_temp as $$
+  select a.id, a.action, a.entity_type, a.actor_user_id, u.name, a.metadata, a.created_at
+  from public.audit_log a
+  left join public."user" u on u.id = a.actor_user_id
+  where a.org_id = app.current_org_id()
+    and app.current_principal() = 'staff'
+  order by a.created_at desc
+  limit greatest(1, least(coalesce(p_limit, 12), 50))
+$$;
+
+-- Defined after the blanket grant above — grant explicitly. Request-path only.
+grant execute on function app.org_kpis()        to ops_app;
+grant execute on function app.org_funnel()      to ops_app;
+grant execute on function app.operator_stats()  to ops_app;
+grant execute on function app.org_trends()      to ops_app;
+grant execute on function app.org_activity(int) to ops_app;

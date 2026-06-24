@@ -4,6 +4,41 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-24 — f-139 Phase 1: operator dashboard analytics + top navbar (present look)
+
+Started the design-parity rebuild of the operator console (**f-139**) — building the Claude Design
+mockup's features in the **present look** (square corners, grayscale, Source Sans, shadcn), adopting
+its **top navbar** but not its warm/mono/rounded chrome. Planned as 4 phases; **Phase 1 (dashboard +
+navbar) done + verified** on `claude/bold-cori-fohjtb`.
+
+- **Backend, no schema change (lower risk):** KPIs/funnel/leaderboard/trends/activity are computed
+  live from existing tables (`placements`, `campaign_matches`, `audit_log`, `memberships`,
+  `clients`) — so `db:generate` stays no-drift, **no migration**. `db/policies.sql` adds 5
+  org-scoped `SECURITY DEFINER` fns (`app.org_kpis` / `org_funnel` / `operator_stats` / `org_trends`
+  / `org_activity`) that read the `app.org_id` GUC and are staff-gated — the **same RLS-exempt owner
+  pattern as the f-135 matcher fns**. Needed because org-wide rollups span every client/operator
+  (which an operator's `can_access_client` RLS blocks) and `audit_log` is admin-select-only. Granted
+  to `ops_app`. `src/db/repo.ts` + `src/api.ts` expose `GET /api/dashboard/{kpis,funnel,leaderboard,
+  trends,activity}` + `/api/applications` (isStaff guard).
+- **Frontend (present look):** `web/components/navbar.tsx` — a top navbar (brand · Dashboard /
+  Explore / Candidates / Calendar · profile menu) — **replaces the left icon rail** in
+  `app/(app)/layout.tsx`; `components/topbar.tsx` slimmed to a title strip (identity moved to the
+  navbar). `web/components/dashboard.tsx` holds the widgets (KPI cards, segmented throughput, funnel
+  bars, activity stream, operator leaderboard, top-applications table); the design's dot-matrix
+  charts are re-rendered as plain **square SVG `MiniBars`/`Sparkline`**. `app/(app)/page.tsx`
+  composes them. `/explore` + `/calendar` are `Placeholder` stubs so the navbar resolves (real views
+  land in P2/P4). `rail.tsx` is now unused (left in place; removable later).
+- **GATES GREEN:** `./init.sh` (Worker tsc + `db:generate` no-drift + web tsc) and
+  `cd web && npm run build` (13 routes).
+- **NOT runtime-verified** (no infra this session). **Before the endpoints return data,
+  `db/policies.sql` must be re-applied to prod Neon** (via the Neon serverless WS driver — raw 5432
+  is blocked here) so the 5 new `app.*` fns exist + are granted. Widgets read real tables and render
+  graceful empty states until `placements`/`campaign_matches` exist.
+- **Next:** Phase 2 — Explore (match review) + `campaign_matches` enrichment
+  (fit/confidence/rationale/skills/guardrails) + approve→placement.
+
+---
+
 ## 2026-06-20 — AUTH FIX: RLS on Better Auth tables blocked all logins
 
 **Symptom:** "can't log in even with correct creds." **Root cause:** `user`/`session`/`account`/`verification` (the Better Auth tables) had **RLS enabled but ZERO policies**. `ops_app` is non-BYPASSRLS, so RLS-on + no-policy = every row denied → sign-in reads `account` → 0 rows → "Invalid email or password" (even when correct); sign-up's INSERT into `user` denied → `FAILED_TO_CREATE_USER`. Verified via the WS driver: as `neondb_owner` the user row is visible; as `ops_app` the same query returned `[]`.

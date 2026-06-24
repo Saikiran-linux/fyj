@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "@/lib/auth-client";
-import { Rail } from "@/components/rail";
+import { Navbar } from "@/components/navbar";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -21,8 +21,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   if (!data) return null; // redirecting
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <Rail />
+    <div className="flex h-screen flex-col overflow-hidden">
+      <Navbar />
       <main className="flex-1 overflow-y-auto">{children}</main>
     </div>
   );
