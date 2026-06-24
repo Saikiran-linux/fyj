@@ -2,135 +2,126 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Topbar } from "@/components/topbar";
 import { CommandBar } from "@/components/command-bar";
-import { ActionCard } from "@/components/action-card";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from "@/components/ui/table";
-import { Avatar } from "@/components/ui/avatar";
-import { Chip, statusTone } from "@/components/ui/chip";
+  KpiCard,
+  ThroughputCard,
+  FunnelCard,
+  ActivityCard,
+  LeaderboardCard,
+  ApplicationsTable,
+} from "@/components/dashboard";
 import { useSession } from "@/lib/auth-client";
 import { api } from "@/lib/api";
-import type { Client } from "@/lib/types";
-
-const ACTIONS = [
-  { emoji: "🔎", tint: "#EFF4FF", title: "Find jobs", description: "Search the index for a client", href: "/jobs" },
-  { emoji: "👤", tint: "#DCFCE7", title: "Add client", description: "Onboard a new job-seeker", href: "/clients?new=1" },
-  { emoji: "📣", tint: "#FEF3C7", title: "New campaign", description: "Start continuous matching", href: "/campaigns" },
-  { emoji: "🧩", tint: "#FCE7F3", title: "From template", description: "Reuse a targeting profile", href: "/clients" },
-];
+import type {
+  DashboardKpis,
+  FunnelRow,
+  OperatorStat,
+  TrendPoint,
+  ActivityEvent,
+  ApplicationRow,
+} from "@/lib/types";
 
 export default function DashboardPage() {
   const router = useRouter();
   const { data } = useSession();
   const firstName = (data?.user?.name || data?.user?.email || "there").split(/[\s@]/)[0];
 
-  const [tab, setTab] = useState("All");
-  const [clients, setClients] = useState<Client[] | null>(null);
+  const [kpis, setKpis] = useState<DashboardKpis | null>(null);
+  const [trends, setTrends] = useState<TrendPoint[]>([]);
+  const [funnel, setFunnel] = useState<FunnelRow[]>([]);
+  const [activity, setActivity] = useState<ActivityEvent[]>([]);
+  const [leaderboard, setLeaderboard] = useState<OperatorStat[]>([]);
+  const [applications, setApplications] = useState<ApplicationRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api
-      .listClients()
-      .then(setClients)
-      .catch((e: Error) => setError(e.message));
+    let alive = true;
+    Promise.all([
+      api.dashboardKpis(),
+      api.dashboardTrends(),
+      api.dashboardFunnel(),
+      api.dashboardActivity(),
+      api.dashboardLeaderboard(),
+      api.listApplications(),
+    ])
+      .then(([k, t, f, a, l, ap]) => {
+        if (!alive) return;
+        setKpis(k);
+        setTrends(t);
+        setFunnel(f);
+        setActivity(a);
+        setLeaderboard(l);
+        setApplications(ap);
+      })
+      .catch((e: Error) => {
+        if (alive) setError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
+  const kpiCards = [
+    {
+      label: "Placements",
+      sub: "month to date",
+      value: kpis?.placementsMtd ?? 0,
+      spark: trends.map((t) => t.placements),
+    },
+    {
+      label: "Response rate",
+      sub: "30-day rolling",
+      value: `${kpis?.responseRate ?? 0}%`,
+      spark: trends.map((t) => t.responses),
+    },
+    {
+      label: "Live applications",
+      sub: "in flight now",
+      value: kpis?.liveApplications ?? 0,
+      spark: trends.map((t) => t.applications),
+    },
+    {
+      label: "Awaiting review",
+      sub: "matches queued",
+      value: kpis?.awaitingReview ?? 0,
+      spark: [] as number[],
+    },
+  ];
+
   return (
-    <>
-      <Topbar />
-      <div className="mx-auto max-w-5xl px-8 pb-16">
-        <h1 className="mb-5 mt-2 font-heading text-[28px] font-bold tracking-tight text-foreground">
-          Hey {firstName}, ready to get started?
-        </h1>
+    <div className="mx-auto max-w-6xl px-8 py-8">
+      <h1 className="mb-5 font-heading text-[28px] font-bold tracking-tight text-foreground">
+        Hey {firstName}, here&rsquo;s your book today
+      </h1>
 
-        <CommandBar onSubmit={(q) => router.push(`/jobs?q=${encodeURIComponent(q)}`)} />
+      <CommandBar onSubmit={(q) => router.push(`/jobs?q=${encodeURIComponent(q)}`)} />
 
-        <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {ACTIONS.map((a) => (
-            <ActionCard key={a.title} {...a} onClick={() => router.push(a.href)} />
-          ))}
+      {error && (
+        <div className="mt-6 border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+          Couldn&rsquo;t load the dashboard — {error}
         </div>
+      )}
 
-        <div className="mt-10">
-          <div className="mb-3">
-            <Tabs value={tab} onValueChange={setTab}>
-              <TabsList variant="line">
-                {["All", "Recents", "Favorites"].map((t) => (
-                  <TabsTrigger key={t} value={t}>
-                    {t}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
-          </div>
-
-          <div className="border border-border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  {["Name", "Status", "Email", "Portal", "Created"].map((c) => (
-                    <TableHead key={c}>{c}</TableHead>
-                  ))}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {error && (
-                  <TableRow>
-                    <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                      Couldn’t load clients — {error}
-                    </TableCell>
-                  </TableRow>
-                )}
-                {!error && clients === null && (
-                  <TableRow>
-                    <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                      Loading…
-                    </TableCell>
-                  </TableRow>
-                )}
-                {!error && clients?.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                      No clients yet. Add your first one.
-                    </TableCell>
-                  </TableRow>
-                )}
-                {clients?.map((c) => (
-                  <TableRow key={c.id}>
-                    <TableCell>
-                      <button
-                        onClick={() => router.push(`/clients/${c.id}`)}
-                        className="flex items-center gap-2.5 font-medium text-foreground hover:text-primary"
-                      >
-                        <Avatar name={c.fullName} />
-                        {c.fullName}
-                      </button>
-                    </TableCell>
-                    <TableCell>
-                      <Chip tone={statusTone(c.status)}>{c.status}</Chip>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">{c.email ?? "—"}</TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {c.portalEnabled ? "Enabled" : "Off"}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {new Date(c.createdAt).toLocaleDateString()}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </div>
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {kpiCards.map((k) => (
+          <KpiCard key={k.label} {...k} />
+        ))}
       </div>
-    </>
+
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <ThroughputCard trends={trends} />
+        <FunnelCard rows={funnel} />
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <ActivityCard events={activity} />
+        <LeaderboardCard rows={leaderboard} />
+      </div>
+
+      <div className="mt-4">
+        <ApplicationsTable rows={applications} />
+      </div>
+    </div>
   );
 }

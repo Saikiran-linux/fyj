@@ -73,3 +73,56 @@ export interface Membership {
   role: StaffRole;
   status: "active" | "invited" | "disabled";
 }
+
+// ── dashboard analytics (f-139) ────────────────────────────────────────
+export interface DashboardKpis {
+  placementsMtd: number;
+  responseRate: number;
+  liveApplications: number;
+  awaitingReview: number;
+}
+
+export interface FunnelRow {
+  label: string;
+  value: number;
+}
+
+export interface OperatorStat {
+  userId: string;
+  name: string | null;
+  email: string | null;
+  candidateCount: number;
+  matchesAwaiting: number;
+  applicationsWeek: number;
+  responseRate: number;
+  placementsMtd: number;
+}
+
+export interface TrendPoint {
+  day: string;
+  applications: number;
+  responses: number;
+  placements: number;
+}
+
+export interface ActivityEvent {
+  id: string;
+  action: string;
+  entityType: string | null;
+  actorUserId: string | null;
+  actorName: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** A placement row joined to its client, for the "top live applications" table. */
+export interface ApplicationRow {
+  id: string;
+  clientId: string;
+  clientName: string;
+  jobId: string | null;
+  companyId: string | null;
+  status: string;
+  appliedAt: string | null;
+  updatedAt: string;
+}
