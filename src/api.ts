@@ -29,6 +29,25 @@ interface UploadedFile {
 const isStaff = (p: Principal): p is Extract<Principal, { principal: "staff" }> =>
   p.principal === "staff";
 
+/** Build a human pay string from the index's structured comp fields (f-139). */
+function formatComp(j: {
+  compMin: number | null;
+  compMax: number | null;
+  compCurrency: string | null;
+  compInterval: string | null;
+  compText: string | null;
+}): string | null {
+  if (j.compText) return j.compText;
+  if (j.compMin == null && j.compMax == null) return null;
+  const sym = !j.compCurrency || j.compCurrency === "USD" ? "$" : `${j.compCurrency} `;
+  const fmt = (n: number) => (n >= 1000 && n % 1000 === 0 ? `${n / 1000}k` : n.toLocaleString("en-US"));
+  const lo = j.compMin != null ? `${sym}${fmt(j.compMin)}` : null;
+  const hi = j.compMax != null ? `${sym}${fmt(j.compMax)}` : null;
+  const range = lo && hi ? `${lo}–${hi}` : (lo ?? hi);
+  const per = j.compInterval === "hour" ? "/hr" : j.compInterval === "month" ? "/mo" : "";
+  return range ? `${range}${per}` : null;
+}
+
 /**
  * The ops-console HTTP API (f-133). Better Auth owns /api/auth/**; every other
  * /api route resolves a tenant Principal and goes through the repository layer
@@ -300,6 +319,11 @@ export function createApi() {
           company: job?.company ?? null,
           location: job?.location ?? null,
           url: job?.url ?? null,
+          workplace: job?.workplace ?? null,
+          employmentType: job?.employmentType ?? null,
+          source: job?.source ?? null,
+          postedAt: job?.postedAt ?? null,
+          comp: job ? formatComp(job) : null,
         };
       }),
     );

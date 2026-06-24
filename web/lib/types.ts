@@ -160,6 +160,12 @@ export interface Match {
   company: string | null;
   location: string | null;
   url: string | null;
+  // f-139 design card enrichment (from the extended get_job)
+  workplace: string | null; // "remote" | "hybrid" | …
+  employmentType: string | null;
+  source: string | null; // ATS provider badge
+  postedAt: string | null;
+  comp: string | null; // formatted pay range, e.g. "$160k–$190k"
 }
 
 export interface ApproveMatchResult {
