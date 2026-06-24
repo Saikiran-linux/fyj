@@ -33,6 +33,17 @@ export interface JobDetail {
   location: string | null;
   url: string | null;
   description: string | null;
+  // f-139 display enrichment (additive; null on older index builds that predate
+  // the get_job extension, so the Worker degrades gracefully).
+  workplace: string | null; // "remote" | "hybrid" | …
+  employmentType: string | null;
+  source: string | null; // ATS provider: greenhouse | ashby | lever | …
+  postedAt: string | null;
+  compMin: number | null;
+  compMax: number | null;
+  compCurrency: string | null;
+  compInterval: string | null;
+  compText: string | null;
 }
 
 /** A ranked job hydrated with its display detail. What the Jobs UI renders. */
