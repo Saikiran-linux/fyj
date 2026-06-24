@@ -4,11 +4,18 @@ import { createDb, type DB, type Principal } from "./db/client";
 import { createAuth } from "./auth";
 import { resolvePrincipal } from "./principal";
 import * as repo from "./db/repo";
-import { matchAction, feedbackSignal, memberRole } from "./db/schema";
+import {
+  matchAction,
+  matchConfidence,
+  clientStatus,
+  consentStatus,
+  feedbackSignal,
+  memberRole,
+} from "./db/schema";
 import { parseResume } from "./resume";
 import { embedText, embedRaw } from "./embeddings";
 import { summarizeResume } from "./summarize";
-import { searchAndHydrate, type JobFilters } from "./index-client";
+import { searchAndHydrate, getJob, type JobFilters } from "./index-client";
 
 type Vars = { db: DB; principal: Principal };
 
@@ -101,6 +108,51 @@ export function createApi() {
 
   app.get("/api/clients/:id", async (c) => {
     const row = await repo.getClient(c.get("db"), c.get("principal"), c.req.param("id"));
+    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  // Update a candidate (status / headline / consent) — f-139 P3.
+  app.patch("/api/clients/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      status?: string;
+      headline?: string | null;
+      consentStatus?: string;
+    };
+    if (body.status !== undefined && !clientStatus.enumValues.includes(body.status as repo.ClientStatus))
+      return c.json({ error: "invalid status" }, 400);
+    if (
+      body.consentStatus !== undefined &&
+      !consentStatus.enumValues.includes(body.consentStatus as repo.ConsentStatus)
+    )
+      return c.json({ error: "invalid consentStatus" }, 400);
+    const row = await repo.updateClient(c.get("db"), p, c.req.param("id"), {
+      status: body.status as repo.ClientStatus | undefined,
+      headline: body.headline,
+      consentStatus: body.consentStatus as repo.ConsentStatus | undefined,
+    });
+    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  // Applications (placements) for one candidate — f-139 P3.
+  app.get("/api/clients/:id/applications", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    return c.json(
+      await repo.listApplications(c.get("db"), p, { clientId: c.req.param("id") }),
+    );
+  });
+
+  // Update a track/profile (autopilot, criteria) — f-139 P3.
+  app.patch("/api/profiles/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      autopilot?: boolean;
+      targetFilters?: Record<string, unknown>;
+    };
+    const row = await repo.updateProfile(c.get("db"), p, c.req.param("id"), body);
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
   });
 
@@ -222,6 +274,46 @@ export function createApi() {
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
   });
 
+  // ── match review / Explore (f-139 P2) ────────────────────────────────
+  // Cross-campaign match list, RLS-scoped to the caller's book, hydrated with
+  // job title/company/location/url from the read-only index (KV-cached).
+  app.get("/api/matches", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const conf = c.req.query("confidence");
+    const confidence =
+      conf && matchConfidence.enumValues.includes(conf as repo.MatchConfidence)
+        ? (conf as repo.MatchConfidence)
+        : null;
+    const limit = Math.min(Math.max(Number(c.req.query("limit")) || 50, 1), 50);
+    const matches = await repo.listMatches(c.get("db"), p, {
+      candidateId: c.req.query("candidateId") ?? null,
+      confidence,
+      limit,
+    });
+    const hydrated = await Promise.all(
+      matches.map(async (m) => {
+        const job = await getJob(c.env, m.jobId, m.companyId).catch(() => null);
+        return {
+          ...m,
+          jobTitle: job?.title ?? null,
+          company: job?.company ?? null,
+          location: job?.location ?? null,
+          url: job?.url ?? null,
+        };
+      }),
+    );
+    return c.json(hydrated);
+  });
+
+  // Approve a match → mark it actioned + queue a placement (idempotent).
+  app.post("/api/matches/:id/approve", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const result = await repo.approveMatch(c.get("db"), p, c.req.param("id"));
+    return result ? c.json(result) : c.json({ error: "not_found" }, 404);
+  });
+
   // ── dashboard analytics (f-139) ──────────────────────────────────────
   // Org-wide rollups for the operator home. Any staff seat (incl. viewer) may
   // read; the org scoping + cross-client aggregation happens in the SECURITY
@@ -261,6 +353,17 @@ export function createApi() {
     const p = c.get("principal");
     if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
     return c.json(await repo.listApplications(c.get("db"), p));
+  });
+
+  // Calendar (f-139 P4): schedule events derived from placements by date.
+  app.get("/api/calendar", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const now = new Date();
+    const year = Number(c.req.query("year")) || now.getUTCFullYear();
+    const monthQ = c.req.query("month");
+    const month = monthQ != null && monthQ !== "" ? Number(monthQ) : now.getUTCMonth();
+    return c.json(await repo.listCalendarEvents(c.get("db"), p, { year, month }));
   });
 
   // ── members (admin) ──────────────────────────────────────────────────

@@ -8,6 +8,7 @@ export type Principal =
   | { principal: "client"; userId: string; orgId: string; clientId: string };
 
 export type ClientStatus = "active" | "paused" | "placed" | "archived";
+export type ConsentStatus = "active" | "pending" | "revoked";
 
 export interface Client {
   id: string;
@@ -16,7 +17,9 @@ export interface Client {
   fullName: string;
   email: string | null;
   phone: string | null;
+  headline: string | null;
   status: ClientStatus;
+  consentStatus: ConsentStatus;
   portalEnabled: boolean;
   notes: string | null;
   createdAt: string;
@@ -31,6 +34,7 @@ export interface ClientProfile {
   parsedProfile: Record<string, unknown> | null;
   embeddingModel: string | null;
   embeddedAt: string | null;
+  autopilot: boolean;
   createdAt: string;
 }
 
@@ -122,7 +126,57 @@ export interface ApplicationRow {
   clientName: string;
   jobId: string | null;
   companyId: string | null;
+  jobTitle: string | null;
+  companyName: string | null;
   status: string;
   appliedAt: string | null;
   updatedAt: string;
+}
+
+// ── match review / Explore (f-139 P2) ──────────────────────────────────
+export type MatchConfidence = "high" | "medium" | "low";
+
+/** A campaign match for the Explore view — enriched (fit/confidence/rationale/
+ *  skills/guardrails) and hydrated with job detail from the index. */
+export interface Match {
+  id: string;
+  clientId: string;
+  clientName: string;
+  campaignId: string;
+  jobId: string;
+  companyId: string;
+  score: number | null;
+  rank: number | null;
+  fitScore: number | null;
+  confidence: MatchConfidence | null;
+  rationale: string | null;
+  matchedSkills: string[] | null;
+  missingSkills: string[] | null;
+  guardrails: string[] | null;
+  action: MatchActionValue;
+  surfacedAt: string;
+  // hydrated from the read-only index (may be null if unreachable/uncached)
+  jobTitle: string | null;
+  company: string | null;
+  location: string | null;
+  url: string | null;
+}
+
+export interface ApproveMatchResult {
+  matchId: string;
+  action: MatchActionValue;
+  placementId: string | null;
+}
+
+// ── calendar (f-139 P4) ────────────────────────────────────────────────
+export type CalendarKind = "interview" | "offer" | "call" | "sync";
+
+export interface CalendarEvent {
+  id: string;
+  date: string; // YYYY-MM-DD
+  kind: CalendarKind;
+  status: string;
+  clientName: string;
+  jobTitle: string | null;
+  companyName: string | null;
 }

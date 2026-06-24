@@ -37,6 +37,7 @@ import {
 export const memberRole = pgEnum("member_role", ["admin", "operator", "viewer"]);
 export const memberStatus = pgEnum("member_status", ["active", "invited", "disabled"]);
 export const clientStatus = pgEnum("client_status", ["active", "paused", "placed", "archived"]);
+export const consentStatus = pgEnum("consent_status", ["active", "pending", "revoked"]);
 export const campaignStatus = pgEnum("campaign_status", ["draft", "active", "paused", "completed"]);
 export const matchAction = pgEnum("match_action", [
   "new",
@@ -46,6 +47,7 @@ export const matchAction = pgEnum("match_action", [
   "evaluated",
   "applied",
 ]);
+export const matchConfidence = pgEnum("match_confidence", ["high", "medium", "low"]);
 export const placementStatus = pgEnum("placement_status", [
   "lead",
   "applied",
@@ -55,6 +57,11 @@ export const placementStatus = pgEnum("placement_status", [
   "placed",
   "rejected",
   "withdrawn",
+  // f-139 P3: design pipeline stages appended (non-destructive — existing values
+  // keep their positions so the migration is a plain ALTER TYPE ADD VALUE).
+  "drafted",
+  "ready_to_send",
+  "responded",
 ]);
 export const feedbackSignal = pgEnum("feedback_signal", [
   "interested",
@@ -111,7 +118,9 @@ export const clients = pgTable(
     fullName: text("full_name").notNull(),
     email: text("email"),
     phone: text("phone"),
+    headline: text("headline"), // "Senior Data Engineer · 8 yrs" (f-139 P3)
     status: clientStatus("status").notNull().default("active"),
+    consentStatus: consentStatus("consent_status").notNull().default("pending"),
     portalEnabled: boolean("portal_enabled").notNull().default(false),
     portalPermissions: jsonb("portal_permissions").notNull().default(sql`'{}'::jsonb`),
     notes: text("notes"),
@@ -146,6 +155,8 @@ export const clientProfiles = pgTable(
     embeddingModel: text("embedding_model"),
     embeddedAt: timestamp("embedded_at", { withTimezone: true }),
     targetFilters: jsonb("target_filters").notNull().default(sql`'{}'::jsonb`),
+    // f-139 P3: pre-approved tracks let high-confidence matches auto-flow.
+    autopilot: boolean("autopilot").notNull().default(false),
     createdBy: text("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -205,6 +216,15 @@ export const campaignMatches = pgTable(
     companyId: uuid("company_id").notNull(), // -> fyj index jobs.company_id
     score: doublePrecision("score"),
     rank: integer("rank"),
+    // Reranker/eval outputs (f-139 P2). fit_score + confidence are derived from
+    // the cosine `score` at surface time (app.record_campaign_run); rationale +
+    // skill breakdown are populated by the LLM eval pass (f-136) — null until then.
+    fitScore: smallint("fit_score"),
+    confidence: matchConfidence("confidence"),
+    rationale: text("rationale"),
+    matchedSkills: text("matched_skills").array(),
+    missingSkills: text("missing_skills").array(),
+    guardrails: text("guardrails").array(),
     surfacedAt: timestamp("surfaced_at", { withTimezone: true }).notNull().defaultNow(),
     action: matchAction("action").notNull().default("new"),
     actionBy: text("action_by"),
@@ -259,7 +279,13 @@ export const placements = pgTable(
     campaignId: uuid("campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
     jobId: uuid("job_id"),
     companyId: uuid("company_id"),
+    // f-139 P3: denormalized job display (the index is read-only — can't join it)
+    // + tailored résumé + time-in-stage tracking.
+    jobTitle: text("job_title"),
+    companyName: text("company_name"),
+    tailoredResumeName: text("tailored_resume_name"),
     status: placementStatus("status").notNull().default("lead"),
+    stageChangedAt: timestamp("stage_changed_at", { withTimezone: true }),
     appliedAt: timestamp("applied_at", { withTimezone: true }),
     followUps: jsonb("follow_ups").notNull().default(sql`'[]'::jsonb`),
     notes: text("notes"),

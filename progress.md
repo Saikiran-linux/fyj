@@ -4,6 +4,97 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-24 — f-139 Phase 4: Calendar — f-139 COMPLETE
+
+Final phase of the operator-console rebuild (**f-139**). No schema/migration — schedule events are
+**derived from `placements`**.
+
+- **Backend:** `repo.listCalendarEvents` maps a placement's stage → an `interview`/`offer`/`call`/
+  `sync` event, dated by `stage_changed_at ?? applied_at ?? updated_at`, RLS-scoped to the book;
+  `GET /api/calendar?year=&month=` (month 0–11).
+- **Web:** `calendar/page.tsx` replaces the stub — **Month** grid (Mon-start, today highlight,
+  per-day event chips, day-detail panel) + **Agenda** list + prev/next/Today nav. `CalendarEvent`
+  type + `api.listCalendar`.
+- **GATES GREEN:** `./init.sh` + `cd web && npm run build` (13 routes; `/calendar` 3.94 kB).
+
+### f-139 done — all four phases shipped on `claude/bold-cori-fohjtb` (PR #10)
+1. Dashboard + top navbar (analytics home; navbar replaces the icon rail).
+2. Explore + `campaign_matches` enrichment (fit/confidence/rationale/skills/guardrails; approve → placement).
+3. Candidates roster + tabbed candidate profile (headline/consent/autopilot; pipeline stages).
+4. Calendar (month/agenda from placements).
+
+**Prod state:** migrations 0001+0002 + `db/policies.sql` applied to Neon this session (verified).
+**Not yet live on the URL:** needs `wrangler deploy` (Worker routes) + **merge `claude/bold-cori-fohjtb`
+→ `main`** (Vercel auto-deploys `web/`). The deployed Worker/UI are still the 06-20 versions.
+⚠️ **Rotate the `neondb_owner` password** (pasted in chat this session).
+
+---
+
+## 2026-06-24 — f-139 Phase 3: Candidates roster + tabbed profile (+ PROD APPLY)
+
+Third phase of the operator-console rebuild (**f-139**), plus the first prod DB change of the
+session (the user provided the `neondb_owner` string for a one-off ops pass).
+
+- **Schema (migration `0002_easy_praxagora.sql`):** `clients` += `headline`, `consent_status`
+  (enum `active|pending|revoked`); `client_profiles` += `autopilot`; `placements` += `job_title`,
+  `company_name`, `tailored_resume_name`, `stage_changed_at`; `placement_status` enum **appended**
+  `drafted`/`ready_to_send`/`responded` (existing values keep their positions → plain `ADD VALUE`).
+- **Backend:** `repo.updateClient` (status/headline/consent), `repo.updateProfile`
+  (autopilot/criteria), `listApplications` now takes `{clientId}` and selects `job_title`/
+  `company_name`; `approveMatch` now queues the placement at `ready_to_send` + `stage_changed_at`.
+  Routes: `PATCH /api/clients/:id`, `GET /api/clients/:id/applications`, `PATCH /api/profiles/:id`.
+- **Web:** `clients/page.tsx` → candidate **roster** (cards: avatar, headline, status + consent
+  chips, Add candidate). `clients/[id]/page.tsx` → **tabbed profile**: hero (avatar, headline,
+  status/consent chips, Pause/Resume) + 3-stat row + tabs **Overview / Matches / Tracks /
+  Applications / Activity** (Matches = inline Approve/Decline; Tracks = autopilot toggle + résumé
+  upload, reusing the f-134 upload path). Types/api extended accordingly.
+- **GATES GREEN:** `./init.sh` (Worker tsc + `db:generate` no-drift + web tsc) and
+  `cd web && npm run build` (13 routes; `/clients` 2.97 kB, `/clients/[id]` 9.62 kB).
+- **PROD APPLY (this session):** migrations **0001 + 0002** and **`db/policies.sql`** applied to
+  Neon over the `@neondatabase/serverless` WS driver (raw 5432 is blocked in this container; same
+  trick as 06-20). Idempotent guards (`IF NOT EXISTS`, guarded `CREATE TYPE`, `ADD VALUE IF NOT
+  EXISTS`). Verified: the 6 `app.*` fns exist, `ops_app` has `execute`, and every new column + enum
+  value is present. **policies.sql compiling against the live schema validates the SQL functions**
+  (the Phase 1/2 dashboard + matcher fns) — the first real verification beyond typecheck this session.
+- **STILL NEEDS for the live URL:** `wrangler deploy` (CF token — to expose the new Worker routes)
+  and **merge to `main`** (Vercel auto-deploys `web/`). The DB is ready; the deployed Worker/UI are
+  still the 06-20 versions until then.
+- ⚠️ **`neondb_owner` password was pasted in chat — ROTATE it.**
+- **Next:** Phase 4 — Calendar (month/week/agenda from placements).
+
+---
+
+## 2026-06-24 — f-139 Phase 2: Explore (match review) + match enrichment
+
+Second phase of the operator-console rebuild (**f-139**). Built the **Explore** match-review view
+and enriched `campaign_matches` so matches carry fit/confidence — on the **live matcher path**.
+
+- **Schema (migration `drizzle/0001_fair_red_hulk.sql`):** `campaign_matches` gains `fit_score`
+  (smallint), `confidence` (new enum `match_confidence` high|medium|low), `rationale` (text), and
+  `matched_skills`/`missing_skills`/`guardrails` (`text[]`).
+- **Matcher:** `app.record_campaign_run` (db/policies.sql) now derives `fit_score =
+  round(clamp(score,0,1)*100)` and bands `confidence` (≥0.82 high, ≥0.64 medium, else low) **at
+  surface time**. `rationale` + skill breakdown stay null until the LLM eval pass (f-136) — we don't
+  fabricate them.
+- **API/repo:** `repo.listMatches` (cross-campaign, RLS-scoped via the `campaign_matches` policy →
+  operators see their book, admins the org; ordered fit desc nulls last) + `repo.approveMatch`
+  (sets `action=shortlisted`, queues a `placement` idempotent on client+job, audits). Routes:
+  `GET /api/matches` (hydrates job title/company/location/url via `get_job`/KV), `POST
+  /api/matches/:id/approve`; decline reuses `POST /api/matches/:id/action {dismissed}`.
+- **Web:** `app/(app)/explore/page.tsx` replaces the stub — confidence filter + match cards (fit +
+  confidence chips, rationale, matched/gaps skills, guardrail block that disables Approve) + a right
+  detail drawer with Approve & queue / Decline. `web/lib/{types,api}.ts` gain
+  `Match`/`MatchConfidence`/`ApproveMatchResult` + `listMatches`/`approveMatch`/`declineMatch`.
+- **GATES GREEN:** `./init.sh` (Worker tsc + `db:generate` no-drift + web tsc) and
+  `cd web && npm run build` (13 routes; `/explore` 4.71 kB).
+- **NOT runtime-verified** (no infra). ⚠️ Before live: **apply migration 0001** (`db:migrate` /
+  `drizzle-kit`) **and re-apply `db/policies.sql`** to Neon (updated `app.record_campaign_run` + the
+  Phase-1 dashboard fns). Until a campaign surfaces matches, Explore shows its empty state.
+- **Next:** Phase 3 — Candidates roster + Candidate profile (headline/consent on clients, autopilot
+  on profiles, placement stage lifecycle).
+
+---
+
 ## 2026-06-24 — f-139 Phase 1: operator dashboard analytics + top navbar (present look)
 
 Started the design-parity rebuild of the operator console (**f-139**) — building the Claude Design

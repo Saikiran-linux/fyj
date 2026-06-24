@@ -8,20 +8,16 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from "@/components/ui/table";
 import { Avatar } from "@/components/ui/avatar";
 import { Chip, statusTone } from "@/components/ui/chip";
 import { api } from "@/lib/api";
-import type { Client } from "@/lib/types";
+import type { Client, ConsentStatus } from "@/lib/types";
 
-export default function ClientsPage() {
+function consentTone(consent: ConsentStatus) {
+  return consent === "active" ? "success" : consent === "pending" ? "warning" : "danger";
+}
+
+export default function CandidatesPage() {
   const router = useRouter();
   const params = useSearchParams();
   const [clients, setClients] = useState<Client[] | null>(null);
@@ -60,12 +56,12 @@ export default function ClientsPage() {
 
   return (
     <>
-      <Topbar title="Clients" />
-      <div className="mx-auto max-w-5xl px-8 pb-16">
+      <Topbar title="Candidates" />
+      <div className="mx-auto max-w-6xl px-8 pb-16">
         <PageHeader
-          title="Clients"
-          subtitle="Job-seekers you represent."
-          action={<Button onClick={() => setCreating((v) => !v)}>+ New client</Button>}
+          title="Candidates"
+          subtitle="The job-seekers you represent."
+          action={<Button onClick={() => setCreating((v) => !v)}>+ Add candidate</Button>}
         />
 
         {creating && (
@@ -102,62 +98,40 @@ export default function ClientsPage() {
           </Card>
         )}
 
-        <div className="border border-border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                {["Name", "Status", "Email", "Portal", "Created"].map((c) => (
-                  <TableHead key={c}>{c}</TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {error && (
-                <TableRow>
-                  <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                    Couldn’t load — {error}
-                  </TableCell>
-                </TableRow>
-              )}
-              {!error && clients === null && (
-                <TableRow>
-                  <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {!error && clients?.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                    No clients yet.
-                  </TableCell>
-                </TableRow>
-              )}
-              {clients?.map((c) => (
-                <TableRow key={c.id}>
-                  <TableCell>
-                    <button
-                      onClick={() => router.push(`/clients/${c.id}`)}
-                      className="flex items-center gap-2.5 font-medium text-foreground hover:text-primary"
-                    >
-                      <Avatar name={c.fullName} />
-                      {c.fullName}
-                    </button>
-                  </TableCell>
-                  <TableCell>
-                    <Chip tone={statusTone(c.status)}>{c.status}</Chip>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">{c.email ?? "—"}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {c.portalEnabled ? "Enabled" : "Off"}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {new Date(c.createdAt).toLocaleDateString()}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+        {error && (
+          <div className="mb-4 border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+            Couldn&rsquo;t load candidates — {error}
+          </div>
+        )}
+        {!error && clients === null && <p className="text-sm text-muted-foreground">Loading…</p>}
+        {!error && clients?.length === 0 && (
+          <div className="border border-border bg-card px-6 py-16 text-center text-sm text-muted-foreground">
+            No candidates yet. Add your first one.
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {clients?.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => router.push(`/clients/${c.id}`)}
+              className="flex flex-col gap-3 border border-border bg-card p-4 text-left transition-colors hover:bg-muted/40"
+            >
+              <div className="flex items-center gap-3">
+                <Avatar name={c.fullName} size={36} />
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-foreground">{c.fullName}</div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {c.headline ?? c.email ?? "—"}
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Chip tone={statusTone(c.status)}>{c.status}</Chip>
+                <Chip tone={consentTone(c.consentStatus)}>consent: {c.consentStatus}</Chip>
+              </div>
+            </button>
+          ))}
         </div>
       </div>
     </>
