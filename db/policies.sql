@@ -378,11 +378,20 @@ begin
   if not found then return; end if;
 
   if jsonb_array_length(coalesce(p_matches, '[]'::jsonb)) > 0 then
+    -- fit_score + confidence are derived from the cosine score at surface time
+    -- (0..1 → 0..100, banded). rationale + skill breakdown stay null until the
+    -- LLM eval pass (f-136) fills them.
     insert into public.campaign_matches
-      (org_id, client_id, campaign_id, job_id, company_id, score, rank)
+      (org_id, client_id, campaign_id, job_id, company_id, score, rank, fit_score, confidence)
     select v_org, v_client, p_campaign_id,
            (m->>'jobId')::uuid, (m->>'companyId')::uuid,
-           (m->>'score')::double precision, (m->>'rank')::int
+           (m->>'score')::double precision, (m->>'rank')::int,
+           greatest(0, least(100, round(coalesce((m->>'score')::double precision, 0) * 100)))::smallint,
+           (case
+              when coalesce((m->>'score')::double precision, 0) >= 0.82 then 'high'
+              when coalesce((m->>'score')::double precision, 0) >= 0.64 then 'medium'
+              else 'low'
+            end)::public.match_confidence
     from jsonb_array_elements(p_matches) as m
     on conflict (campaign_id, job_id) do nothing;
   end if;

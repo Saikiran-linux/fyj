@@ -1,8 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { CommandBar } from "@/components/command-bar";
 import {
   KpiCard,
   ThroughputCard,
@@ -23,7 +21,6 @@ import type {
 } from "@/lib/types";
 
 export default function DashboardPage() {
-  const router = useRouter();
   const { data } = useSession();
   const firstName = (data?.user?.name || data?.user?.email || "there").split(/[\s@]/)[0];
 
@@ -94,8 +91,6 @@ export default function DashboardPage() {
       <h1 className="mb-5 font-heading text-[28px] font-bold tracking-tight text-foreground">
         Hey {firstName}, here&rsquo;s your book today
       </h1>
-
-      <CommandBar onSubmit={(q) => router.push(`/jobs?q=${encodeURIComponent(q)}`)} />
 
       {error && (
         <div className="mt-6 border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">

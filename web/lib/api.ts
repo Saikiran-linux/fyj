@@ -13,6 +13,12 @@ import type {
   TrendPoint,
   ActivityEvent,
   ApplicationRow,
+  Match,
+  MatchConfidence,
+  ApproveMatchResult,
+  ClientStatus,
+  ConsentStatus,
+  CalendarEvent,
 } from "./types";
 
 /**
@@ -86,6 +92,12 @@ export const api = {
     assignedOperatorId?: string;
     notes?: string;
   }) => req<Client>("/api/clients", { method: "POST", body: JSON.stringify(input) }),
+  updateClient: (
+    id: string,
+    input: { status?: ClientStatus; headline?: string | null; consentStatus?: ConsentStatus },
+  ) => req<Client>(`/api/clients/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  listClientApplications: (clientId: string) =>
+    req<ApplicationRow[]>(`/api/clients/${clientId}/applications`),
 
   listProfiles: (clientId: string) =>
     req<ClientProfile[]>(`/api/clients/${clientId}/profiles`),
@@ -94,6 +106,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  updateProfile: (
+    id: string,
+    input: { autopilot?: boolean; targetFilters?: Record<string, unknown> },
+  ) => req<ClientProfile>(`/api/profiles/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
   uploadResume: (clientId: string, profileId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -127,4 +143,29 @@ export const api = {
   dashboardTrends: () => req<TrendPoint[]>("/api/dashboard/trends"),
   dashboardActivity: () => req<ActivityEvent[]>("/api/dashboard/activity"),
   listApplications: () => req<ApplicationRow[]>("/api/applications"),
+
+  // Match review / Explore (f-139 P2)
+  listMatches: (params?: { candidateId?: string; confidence?: MatchConfidence }) => {
+    const qs = new URLSearchParams();
+    if (params?.candidateId) qs.set("candidateId", params.candidateId);
+    if (params?.confidence) qs.set("confidence", params.confidence);
+    const q = qs.toString();
+    return req<Match[]>(`/api/matches${q ? `?${q}` : ""}`);
+  },
+  approveMatch: (matchId: string) =>
+    req<ApproveMatchResult>(`/api/matches/${matchId}/approve`, { method: "POST" }),
+  declineMatch: (matchId: string) =>
+    req<CampaignMatch>(`/api/matches/${matchId}/action`, {
+      method: "POST",
+      body: JSON.stringify({ action: "dismissed" }),
+    }),
+
+  // Calendar (f-139 P4) — month: 0-11
+  listCalendar: (params?: { year?: number; month?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.year != null) qs.set("year", String(params.year));
+    if (params?.month != null) qs.set("month", String(params.month));
+    const q = qs.toString();
+    return req<CalendarEvent[]>(`/api/calendar${q ? `?${q}` : ""}`);
+  },
 };

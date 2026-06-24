@@ -8,6 +8,20 @@
       "when": 1781734431458,
       "tag": "0000_abnormal_ronan",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782279489052,
+      "tag": "0001_fair_red_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782280135660,
+      "tag": "0002_easy_praxagora",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
 import { withTenant, type DB, type Principal, type Tx } from "./client";
 import {
   clients,
@@ -9,7 +9,10 @@ import {
   memberships,
   feedback,
   auditLog,
+  clientStatus,
+  consentStatus,
   matchAction,
+  matchConfidence,
   feedbackSignal,
   memberRole,
 } from "./schema";
@@ -26,6 +29,9 @@ import {
  */
 
 export type MatchAction = (typeof matchAction.enumValues)[number];
+export type MatchConfidence = (typeof matchConfidence.enumValues)[number];
+export type ClientStatus = (typeof clientStatus.enumValues)[number];
+export type ConsentStatus = (typeof consentStatus.enumValues)[number];
 export type FeedbackSignal = (typeof feedbackSignal.enumValues)[number];
 export type MemberRole = (typeof memberRole.enumValues)[number];
 
@@ -399,37 +405,299 @@ export interface ApplicationRow {
   clientName: string;
   jobId: string | null;
   companyId: string | null;
+  jobTitle: string | null;
+  companyName: string | null;
   status: string;
   appliedAt: string | null;
   updatedAt: string;
 }
 
-export function listApplications(db: DB, who: Principal, limit = 50): Promise<ApplicationRow[]> {
+export interface ListApplicationsOptions {
+  clientId?: string;
+  limit?: number;
+}
+
+export function listApplications(
+  db: DB,
+  who: Principal,
+  opts: ListApplicationsOptions = {},
+): Promise<ApplicationRow[]> {
   return withTenant(db, who, async (tx) => {
-    const rows = await tx
+    const base = tx
       .select({
         id: placements.id,
         clientId: placements.clientId,
         clientName: clients.fullName,
         jobId: placements.jobId,
         companyId: placements.companyId,
+        jobTitle: placements.jobTitle,
+        companyName: placements.companyName,
         status: placements.status,
         appliedAt: placements.appliedAt,
         updatedAt: placements.updatedAt,
       })
       .from(placements)
-      .innerJoin(clients, eq(clients.id, placements.clientId))
+      .innerJoin(clients, eq(clients.id, placements.clientId));
+    const rows = await (opts.clientId
+      ? base.where(eq(placements.clientId, opts.clientId))
+      : base
+    )
       .orderBy(desc(placements.updatedAt))
-      .limit(limit);
+      .limit(opts.limit ?? 50);
     return rows.map((r) => ({
       id: r.id,
       clientId: r.clientId,
       clientName: r.clientName,
       jobId: r.jobId,
       companyId: r.companyId,
+      jobTitle: r.jobTitle,
+      companyName: r.companyName,
       status: r.status,
       appliedAt: r.appliedAt ? new Date(r.appliedAt).toISOString() : null,
       updatedAt: new Date(r.updatedAt).toISOString(),
     }));
+  });
+}
+
+// ── match review / Explore (f-139 P2) ──────────────────────────────────
+// Cross-campaign match list for the Explore view. RLS-scoped: an operator only
+// sees matches for their assigned clients (via the campaign_matches policy),
+// an admin sees the whole org. Job title/company are NOT stored (the index is
+// read-only) — the API hydrates them via get_job/KV after this returns.
+export interface MatchRow {
+  id: string;
+  clientId: string;
+  clientName: string;
+  campaignId: string;
+  jobId: string;
+  companyId: string;
+  score: number | null;
+  rank: number | null;
+  fitScore: number | null;
+  confidence: MatchConfidence | null;
+  rationale: string | null;
+  matchedSkills: string[] | null;
+  missingSkills: string[] | null;
+  guardrails: string[] | null;
+  action: MatchAction;
+  surfacedAt: string;
+}
+
+export interface ListMatchesFilters {
+  candidateId?: string | null;
+  confidence?: MatchConfidence | null;
+  limit?: number;
+}
+
+export function listMatches(
+  db: DB,
+  who: Principal,
+  filters: ListMatchesFilters = {},
+): Promise<MatchRow[]> {
+  return withTenant(db, who, async (tx) => {
+    const conds = [ne(campaignMatches.action, "dismissed")];
+    if (filters.candidateId) conds.push(eq(campaignMatches.clientId, filters.candidateId));
+    if (filters.confidence) conds.push(eq(campaignMatches.confidence, filters.confidence));
+    const rows = await tx
+      .select({
+        id: campaignMatches.id,
+        clientId: campaignMatches.clientId,
+        clientName: clients.fullName,
+        campaignId: campaignMatches.campaignId,
+        jobId: campaignMatches.jobId,
+        companyId: campaignMatches.companyId,
+        score: campaignMatches.score,
+        rank: campaignMatches.rank,
+        fitScore: campaignMatches.fitScore,
+        confidence: campaignMatches.confidence,
+        rationale: campaignMatches.rationale,
+        matchedSkills: campaignMatches.matchedSkills,
+        missingSkills: campaignMatches.missingSkills,
+        guardrails: campaignMatches.guardrails,
+        action: campaignMatches.action,
+        surfacedAt: campaignMatches.surfacedAt,
+      })
+      .from(campaignMatches)
+      .innerJoin(clients, eq(clients.id, campaignMatches.clientId))
+      .where(and(...conds))
+      .orderBy(
+        sql`${campaignMatches.fitScore} desc nulls last, ${campaignMatches.score} desc nulls last`,
+      )
+      .limit(filters.limit ?? 100);
+    return rows.map((r) => ({ ...r, surfacedAt: new Date(r.surfacedAt).toISOString() }));
+  });
+}
+
+// Approve a match: mark it out of the review queue and queue a placement (the
+// "application" the operator will tailor + send). Idempotent on (client, job).
+export interface ApproveMatchResult {
+  matchId: string;
+  action: MatchAction;
+  placementId: string | null;
+}
+
+export function approveMatch(
+  db: DB,
+  who: Principal,
+  matchId: string,
+): Promise<ApproveMatchResult | null> {
+  return withTenant(db, who, async (tx) => {
+    const [m] = await tx
+      .select()
+      .from(campaignMatches)
+      .where(eq(campaignMatches.id, matchId))
+      .limit(1);
+    if (!m) return null;
+
+    const [updated] = await tx
+      .update(campaignMatches)
+      .set({ action: "shortlisted", actionBy: who.userId, actionAt: new Date(), updatedAt: new Date() })
+      .where(eq(campaignMatches.id, matchId))
+      .returning();
+
+    const [existing] = await tx
+      .select({ id: placements.id })
+      .from(placements)
+      .where(and(eq(placements.clientId, m.clientId), eq(placements.jobId, m.jobId)))
+      .limit(1);
+
+    let placementId = existing?.id ?? null;
+    if (!existing) {
+      const [p] = await tx
+        .insert(placements)
+        .values({
+          orgId: who.orgId,
+          clientId: m.clientId,
+          campaignId: m.campaignId,
+          jobId: m.jobId,
+          companyId: m.companyId,
+          status: "ready_to_send",
+          stageChangedAt: new Date(),
+          createdBy: who.userId,
+        })
+        .returning({ id: placements.id });
+      placementId = p?.id ?? null;
+    }
+
+    await audit(tx, who, "match.approve", "campaign_match", matchId, { placementId });
+    return {
+      matchId,
+      action: (updated?.action ?? "shortlisted") as MatchAction,
+      placementId,
+    };
+  });
+}
+
+// ── candidate + track updates (f-139 P3) ───────────────────────────────
+export interface UpdateClientInput {
+  status?: ClientStatus;
+  headline?: string | null;
+  consentStatus?: ConsentStatus;
+}
+
+export function updateClient(db: DB, who: Principal, clientId: string, input: UpdateClientInput) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .update(clients)
+      .set({
+        ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.headline !== undefined ? { headline: input.headline } : {}),
+        ...(input.consentStatus !== undefined ? { consentStatus: input.consentStatus } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(clients.id, clientId))
+      .returning();
+    if (row) await audit(tx, who, "client.update", "client", row.id, { ...input });
+    return row ?? null;
+  });
+}
+
+export interface UpdateProfileInput {
+  autopilot?: boolean;
+  targetFilters?: Record<string, unknown>;
+}
+
+export function updateProfile(
+  db: DB,
+  who: Principal,
+  profileId: string,
+  input: UpdateProfileInput,
+) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .update(clientProfiles)
+      .set({
+        ...(input.autopilot !== undefined ? { autopilot: input.autopilot } : {}),
+        ...(input.targetFilters !== undefined ? { targetFilters: input.targetFilters } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(clientProfiles.id, profileId))
+      .returning();
+    if (row) await audit(tx, who, "profile.update", "client_profile", row.id, { autopilot: input.autopilot });
+    return row ?? null;
+  });
+}
+
+// ── calendar (f-139 P4) ────────────────────────────────────────────────
+// Schedule events derived from placements (no separate table): a placement's
+// stage maps to an event kind, dated by stage_changed_at ?? applied_at ??
+// updated_at. RLS-scoped to the caller's book via the placements policy.
+export type CalendarKind = "interview" | "offer" | "call" | "sync";
+
+export interface CalendarEvent {
+  id: string;
+  date: string; // YYYY-MM-DD
+  kind: CalendarKind;
+  status: string;
+  clientName: string;
+  jobTitle: string | null;
+  companyName: string | null;
+}
+
+export function listCalendarEvents(
+  db: DB,
+  who: Principal,
+  opts: { year: number; month: number }, // month: 0–11
+): Promise<CalendarEvent[]> {
+  return withTenant(db, who, async (tx) => {
+    const rows = await tx
+      .select({
+        id: placements.id,
+        clientName: clients.fullName,
+        jobTitle: placements.jobTitle,
+        companyName: placements.companyName,
+        status: placements.status,
+        appliedAt: placements.appliedAt,
+        stageChangedAt: placements.stageChangedAt,
+        updatedAt: placements.updatedAt,
+      })
+      .from(placements)
+      .innerJoin(clients, eq(clients.id, placements.clientId));
+
+    const out: CalendarEvent[] = [];
+    for (const r of rows) {
+      if (r.status === "rejected" || r.status === "withdrawn") continue;
+      const when = r.stageChangedAt ?? r.appliedAt ?? r.updatedAt;
+      const d = new Date(when);
+      if (d.getFullYear() !== opts.year || d.getMonth() !== opts.month) continue;
+      const kind: CalendarKind =
+        r.status === "interview"
+          ? "interview"
+          : r.status === "offer"
+            ? "offer"
+            : r.status === "responded" || r.status === "screening"
+              ? "call"
+              : "sync";
+      out.push({
+        id: r.id,
+        date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+        kind,
+        status: r.status,
+        clientName: r.clientName,
+        jobTitle: r.jobTitle,
+        companyName: r.companyName,
+      });
+    }
+    return out;
   });
 }
