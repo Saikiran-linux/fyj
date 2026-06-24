@@ -18,6 +18,7 @@ import type {
   ApproveMatchResult,
   ClientStatus,
   ConsentStatus,
+  CalendarEvent,
 } from "./types";
 
 /**
@@ -158,4 +159,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ action: "dismissed" }),
     }),
+
+  // Calendar (f-139 P4) — month: 0-11
+  listCalendar: (params?: { year?: number; month?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.year != null) qs.set("year", String(params.year));
+    if (params?.month != null) qs.set("month", String(params.month));
+    const q = qs.toString();
+    return req<CalendarEvent[]>(`/api/calendar${q ? `?${q}` : ""}`);
+  },
 };

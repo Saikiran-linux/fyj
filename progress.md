@@ -4,6 +4,32 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-24 — f-139 Phase 4: Calendar — f-139 COMPLETE
+
+Final phase of the operator-console rebuild (**f-139**). No schema/migration — schedule events are
+**derived from `placements`**.
+
+- **Backend:** `repo.listCalendarEvents` maps a placement's stage → an `interview`/`offer`/`call`/
+  `sync` event, dated by `stage_changed_at ?? applied_at ?? updated_at`, RLS-scoped to the book;
+  `GET /api/calendar?year=&month=` (month 0–11).
+- **Web:** `calendar/page.tsx` replaces the stub — **Month** grid (Mon-start, today highlight,
+  per-day event chips, day-detail panel) + **Agenda** list + prev/next/Today nav. `CalendarEvent`
+  type + `api.listCalendar`.
+- **GATES GREEN:** `./init.sh` + `cd web && npm run build` (13 routes; `/calendar` 3.94 kB).
+
+### f-139 done — all four phases shipped on `claude/bold-cori-fohjtb` (PR #10)
+1. Dashboard + top navbar (analytics home; navbar replaces the icon rail).
+2. Explore + `campaign_matches` enrichment (fit/confidence/rationale/skills/guardrails; approve → placement).
+3. Candidates roster + tabbed candidate profile (headline/consent/autopilot; pipeline stages).
+4. Calendar (month/agenda from placements).
+
+**Prod state:** migrations 0001+0002 + `db/policies.sql` applied to Neon this session (verified).
+**Not yet live on the URL:** needs `wrangler deploy` (Worker routes) + **merge `claude/bold-cori-fohjtb`
+→ `main`** (Vercel auto-deploys `web/`). The deployed Worker/UI are still the 06-20 versions.
+⚠️ **Rotate the `neondb_owner` password** (pasted in chat this session).
+
+---
+
 ## 2026-06-24 — f-139 Phase 3: Candidates roster + tabbed profile (+ PROD APPLY)
 
 Third phase of the operator-console rebuild (**f-139**), plus the first prod DB change of the

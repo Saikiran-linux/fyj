@@ -637,3 +637,67 @@ export function updateProfile(
     return row ?? null;
   });
 }
+
+// ── calendar (f-139 P4) ────────────────────────────────────────────────
+// Schedule events derived from placements (no separate table): a placement's
+// stage maps to an event kind, dated by stage_changed_at ?? applied_at ??
+// updated_at. RLS-scoped to the caller's book via the placements policy.
+export type CalendarKind = "interview" | "offer" | "call" | "sync";
+
+export interface CalendarEvent {
+  id: string;
+  date: string; // YYYY-MM-DD
+  kind: CalendarKind;
+  status: string;
+  clientName: string;
+  jobTitle: string | null;
+  companyName: string | null;
+}
+
+export function listCalendarEvents(
+  db: DB,
+  who: Principal,
+  opts: { year: number; month: number }, // month: 0–11
+): Promise<CalendarEvent[]> {
+  return withTenant(db, who, async (tx) => {
+    const rows = await tx
+      .select({
+        id: placements.id,
+        clientName: clients.fullName,
+        jobTitle: placements.jobTitle,
+        companyName: placements.companyName,
+        status: placements.status,
+        appliedAt: placements.appliedAt,
+        stageChangedAt: placements.stageChangedAt,
+        updatedAt: placements.updatedAt,
+      })
+      .from(placements)
+      .innerJoin(clients, eq(clients.id, placements.clientId));
+
+    const out: CalendarEvent[] = [];
+    for (const r of rows) {
+      if (r.status === "rejected" || r.status === "withdrawn") continue;
+      const when = r.stageChangedAt ?? r.appliedAt ?? r.updatedAt;
+      const d = new Date(when);
+      if (d.getFullYear() !== opts.year || d.getMonth() !== opts.month) continue;
+      const kind: CalendarKind =
+        r.status === "interview"
+          ? "interview"
+          : r.status === "offer"
+            ? "offer"
+            : r.status === "responded" || r.status === "screening"
+              ? "call"
+              : "sync";
+      out.push({
+        id: r.id,
+        date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+        kind,
+        status: r.status,
+        clientName: r.clientName,
+        jobTitle: r.jobTitle,
+        companyName: r.companyName,
+      });
+    }
+    return out;
+  });
+}

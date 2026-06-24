@@ -167,3 +167,16 @@ export interface ApproveMatchResult {
   action: MatchActionValue;
   placementId: string | null;
 }
+
+// ── calendar (f-139 P4) ────────────────────────────────────────────────
+export type CalendarKind = "interview" | "offer" | "call" | "sync";
+
+export interface CalendarEvent {
+  id: string;
+  date: string; // YYYY-MM-DD
+  kind: CalendarKind;
+  status: string;
+  clientName: string;
+  jobTitle: string | null;
+  companyName: string | null;
+}

@@ -355,6 +355,17 @@ export function createApi() {
     return c.json(await repo.listApplications(c.get("db"), p));
   });
 
+  // Calendar (f-139 P4): schedule events derived from placements by date.
+  app.get("/api/calendar", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const now = new Date();
+    const year = Number(c.req.query("year")) || now.getUTCFullYear();
+    const monthQ = c.req.query("month");
+    const month = monthQ != null && monthQ !== "" ? Number(monthQ) : now.getUTCMonth();
+    return c.json(await repo.listCalendarEvents(c.get("db"), p, { year, month }));
+  });
+
   // ── members (admin) ──────────────────────────────────────────────────
   app.get("/api/members", async (c) => {
     const p = c.get("principal");
