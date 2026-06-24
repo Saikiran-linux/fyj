@@ -4,6 +4,37 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-24 — f-139 Phase 2: Explore (match review) + match enrichment
+
+Second phase of the operator-console rebuild (**f-139**). Built the **Explore** match-review view
+and enriched `campaign_matches` so matches carry fit/confidence — on the **live matcher path**.
+
+- **Schema (migration `drizzle/0001_fair_red_hulk.sql`):** `campaign_matches` gains `fit_score`
+  (smallint), `confidence` (new enum `match_confidence` high|medium|low), `rationale` (text), and
+  `matched_skills`/`missing_skills`/`guardrails` (`text[]`).
+- **Matcher:** `app.record_campaign_run` (db/policies.sql) now derives `fit_score =
+  round(clamp(score,0,1)*100)` and bands `confidence` (≥0.82 high, ≥0.64 medium, else low) **at
+  surface time**. `rationale` + skill breakdown stay null until the LLM eval pass (f-136) — we don't
+  fabricate them.
+- **API/repo:** `repo.listMatches` (cross-campaign, RLS-scoped via the `campaign_matches` policy →
+  operators see their book, admins the org; ordered fit desc nulls last) + `repo.approveMatch`
+  (sets `action=shortlisted`, queues a `placement` idempotent on client+job, audits). Routes:
+  `GET /api/matches` (hydrates job title/company/location/url via `get_job`/KV), `POST
+  /api/matches/:id/approve`; decline reuses `POST /api/matches/:id/action {dismissed}`.
+- **Web:** `app/(app)/explore/page.tsx` replaces the stub — confidence filter + match cards (fit +
+  confidence chips, rationale, matched/gaps skills, guardrail block that disables Approve) + a right
+  detail drawer with Approve & queue / Decline. `web/lib/{types,api}.ts` gain
+  `Match`/`MatchConfidence`/`ApproveMatchResult` + `listMatches`/`approveMatch`/`declineMatch`.
+- **GATES GREEN:** `./init.sh` (Worker tsc + `db:generate` no-drift + web tsc) and
+  `cd web && npm run build` (13 routes; `/explore` 4.71 kB).
+- **NOT runtime-verified** (no infra). ⚠️ Before live: **apply migration 0001** (`db:migrate` /
+  `drizzle-kit`) **and re-apply `db/policies.sql`** to Neon (updated `app.record_campaign_run` + the
+  Phase-1 dashboard fns). Until a campaign surfaces matches, Explore shows its empty state.
+- **Next:** Phase 3 — Candidates roster + Candidate profile (headline/consent on clients, autopilot
+  on profiles, placement stage lifecycle).
+
+---
+
 ## 2026-06-24 — f-139 Phase 1: operator dashboard analytics + top navbar (present look)
 
 Started the design-parity rebuild of the operator console (**f-139**) — building the Claude Design

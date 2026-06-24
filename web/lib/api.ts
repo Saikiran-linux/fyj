@@ -13,6 +13,9 @@ import type {
   TrendPoint,
   ActivityEvent,
   ApplicationRow,
+  Match,
+  MatchConfidence,
+  ApproveMatchResult,
 } from "./types";
 
 /**
@@ -127,4 +130,20 @@ export const api = {
   dashboardTrends: () => req<TrendPoint[]>("/api/dashboard/trends"),
   dashboardActivity: () => req<ActivityEvent[]>("/api/dashboard/activity"),
   listApplications: () => req<ApplicationRow[]>("/api/applications"),
+
+  // Match review / Explore (f-139 P2)
+  listMatches: (params?: { candidateId?: string; confidence?: MatchConfidence }) => {
+    const qs = new URLSearchParams();
+    if (params?.candidateId) qs.set("candidateId", params.candidateId);
+    if (params?.confidence) qs.set("confidence", params.confidence);
+    const q = qs.toString();
+    return req<Match[]>(`/api/matches${q ? `?${q}` : ""}`);
+  },
+  approveMatch: (matchId: string) =>
+    req<ApproveMatchResult>(`/api/matches/${matchId}/approve`, { method: "POST" }),
+  declineMatch: (matchId: string) =>
+    req<CampaignMatch>(`/api/matches/${matchId}/action`, {
+      method: "POST",
+      body: JSON.stringify({ action: "dismissed" }),
+    }),
 };

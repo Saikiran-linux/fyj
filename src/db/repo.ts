@@ -1,4 +1,4 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
 import { withTenant, type DB, type Principal, type Tx } from "./client";
 import {
   clients,
@@ -10,6 +10,7 @@ import {
   feedback,
   auditLog,
   matchAction,
+  matchConfidence,
   feedbackSignal,
   memberRole,
 } from "./schema";
@@ -26,6 +27,7 @@ import {
  */
 
 export type MatchAction = (typeof matchAction.enumValues)[number];
+export type MatchConfidence = (typeof matchConfidence.enumValues)[number];
 export type FeedbackSignal = (typeof feedbackSignal.enumValues)[number];
 export type MemberRole = (typeof memberRole.enumValues)[number];
 
@@ -431,5 +433,133 @@ export function listApplications(db: DB, who: Principal, limit = 50): Promise<Ap
       appliedAt: r.appliedAt ? new Date(r.appliedAt).toISOString() : null,
       updatedAt: new Date(r.updatedAt).toISOString(),
     }));
+  });
+}
+
+// ── match review / Explore (f-139 P2) ──────────────────────────────────
+// Cross-campaign match list for the Explore view. RLS-scoped: an operator only
+// sees matches for their assigned clients (via the campaign_matches policy),
+// an admin sees the whole org. Job title/company are NOT stored (the index is
+// read-only) — the API hydrates them via get_job/KV after this returns.
+export interface MatchRow {
+  id: string;
+  clientId: string;
+  clientName: string;
+  campaignId: string;
+  jobId: string;
+  companyId: string;
+  score: number | null;
+  rank: number | null;
+  fitScore: number | null;
+  confidence: MatchConfidence | null;
+  rationale: string | null;
+  matchedSkills: string[] | null;
+  missingSkills: string[] | null;
+  guardrails: string[] | null;
+  action: MatchAction;
+  surfacedAt: string;
+}
+
+export interface ListMatchesFilters {
+  candidateId?: string | null;
+  confidence?: MatchConfidence | null;
+  limit?: number;
+}
+
+export function listMatches(
+  db: DB,
+  who: Principal,
+  filters: ListMatchesFilters = {},
+): Promise<MatchRow[]> {
+  return withTenant(db, who, async (tx) => {
+    const conds = [ne(campaignMatches.action, "dismissed")];
+    if (filters.candidateId) conds.push(eq(campaignMatches.clientId, filters.candidateId));
+    if (filters.confidence) conds.push(eq(campaignMatches.confidence, filters.confidence));
+    const rows = await tx
+      .select({
+        id: campaignMatches.id,
+        clientId: campaignMatches.clientId,
+        clientName: clients.fullName,
+        campaignId: campaignMatches.campaignId,
+        jobId: campaignMatches.jobId,
+        companyId: campaignMatches.companyId,
+        score: campaignMatches.score,
+        rank: campaignMatches.rank,
+        fitScore: campaignMatches.fitScore,
+        confidence: campaignMatches.confidence,
+        rationale: campaignMatches.rationale,
+        matchedSkills: campaignMatches.matchedSkills,
+        missingSkills: campaignMatches.missingSkills,
+        guardrails: campaignMatches.guardrails,
+        action: campaignMatches.action,
+        surfacedAt: campaignMatches.surfacedAt,
+      })
+      .from(campaignMatches)
+      .innerJoin(clients, eq(clients.id, campaignMatches.clientId))
+      .where(and(...conds))
+      .orderBy(
+        sql`${campaignMatches.fitScore} desc nulls last, ${campaignMatches.score} desc nulls last`,
+      )
+      .limit(filters.limit ?? 100);
+    return rows.map((r) => ({ ...r, surfacedAt: new Date(r.surfacedAt).toISOString() }));
+  });
+}
+
+// Approve a match: mark it out of the review queue and queue a placement (the
+// "application" the operator will tailor + send). Idempotent on (client, job).
+export interface ApproveMatchResult {
+  matchId: string;
+  action: MatchAction;
+  placementId: string | null;
+}
+
+export function approveMatch(
+  db: DB,
+  who: Principal,
+  matchId: string,
+): Promise<ApproveMatchResult | null> {
+  return withTenant(db, who, async (tx) => {
+    const [m] = await tx
+      .select()
+      .from(campaignMatches)
+      .where(eq(campaignMatches.id, matchId))
+      .limit(1);
+    if (!m) return null;
+
+    const [updated] = await tx
+      .update(campaignMatches)
+      .set({ action: "shortlisted", actionBy: who.userId, actionAt: new Date(), updatedAt: new Date() })
+      .where(eq(campaignMatches.id, matchId))
+      .returning();
+
+    const [existing] = await tx
+      .select({ id: placements.id })
+      .from(placements)
+      .where(and(eq(placements.clientId, m.clientId), eq(placements.jobId, m.jobId)))
+      .limit(1);
+
+    let placementId = existing?.id ?? null;
+    if (!existing) {
+      const [p] = await tx
+        .insert(placements)
+        .values({
+          orgId: who.orgId,
+          clientId: m.clientId,
+          campaignId: m.campaignId,
+          jobId: m.jobId,
+          companyId: m.companyId,
+          status: "lead",
+          createdBy: who.userId,
+        })
+        .returning({ id: placements.id });
+      placementId = p?.id ?? null;
+    }
+
+    await audit(tx, who, "match.approve", "campaign_match", matchId, { placementId });
+    return {
+      matchId,
+      action: (updated?.action ?? "shortlisted") as MatchAction,
+      placementId,
+    };
   });
 }

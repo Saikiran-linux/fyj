@@ -46,6 +46,7 @@ export const matchAction = pgEnum("match_action", [
   "evaluated",
   "applied",
 ]);
+export const matchConfidence = pgEnum("match_confidence", ["high", "medium", "low"]);
 export const placementStatus = pgEnum("placement_status", [
   "lead",
   "applied",
@@ -205,6 +206,15 @@ export const campaignMatches = pgTable(
     companyId: uuid("company_id").notNull(), // -> fyj index jobs.company_id
     score: doublePrecision("score"),
     rank: integer("rank"),
+    // Reranker/eval outputs (f-139 P2). fit_score + confidence are derived from
+    // the cosine `score` at surface time (app.record_campaign_run); rationale +
+    // skill breakdown are populated by the LLM eval pass (f-136) — null until then.
+    fitScore: smallint("fit_score"),
+    confidence: matchConfidence("confidence"),
+    rationale: text("rationale"),
+    matchedSkills: text("matched_skills").array(),
+    missingSkills: text("missing_skills").array(),
+    guardrails: text("guardrails").array(),
     surfacedAt: timestamp("surfaced_at", { withTimezone: true }).notNull().defaultNow(),
     action: matchAction("action").notNull().default("new"),
     actionBy: text("action_by"),

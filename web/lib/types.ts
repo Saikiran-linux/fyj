@@ -126,3 +126,38 @@ export interface ApplicationRow {
   appliedAt: string | null;
   updatedAt: string;
 }
+
+// ── match review / Explore (f-139 P2) ──────────────────────────────────
+export type MatchConfidence = "high" | "medium" | "low";
+
+/** A campaign match for the Explore view — enriched (fit/confidence/rationale/
+ *  skills/guardrails) and hydrated with job detail from the index. */
+export interface Match {
+  id: string;
+  clientId: string;
+  clientName: string;
+  campaignId: string;
+  jobId: string;
+  companyId: string;
+  score: number | null;
+  rank: number | null;
+  fitScore: number | null;
+  confidence: MatchConfidence | null;
+  rationale: string | null;
+  matchedSkills: string[] | null;
+  missingSkills: string[] | null;
+  guardrails: string[] | null;
+  action: MatchActionValue;
+  surfacedAt: string;
+  // hydrated from the read-only index (may be null if unreachable/uncached)
+  jobTitle: string | null;
+  company: string | null;
+  location: string | null;
+  url: string | null;
+}
+
+export interface ApproveMatchResult {
+  matchId: string;
+  action: MatchActionValue;
+  placementId: string | null;
+}
