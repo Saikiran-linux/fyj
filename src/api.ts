@@ -4,7 +4,14 @@ import { createDb, type DB, type Principal } from "./db/client";
 import { createAuth } from "./auth";
 import { resolvePrincipal } from "./principal";
 import * as repo from "./db/repo";
-import { matchAction, matchConfidence, feedbackSignal, memberRole } from "./db/schema";
+import {
+  matchAction,
+  matchConfidence,
+  clientStatus,
+  consentStatus,
+  feedbackSignal,
+  memberRole,
+} from "./db/schema";
 import { parseResume } from "./resume";
 import { embedText, embedRaw } from "./embeddings";
 import { summarizeResume } from "./summarize";
@@ -101,6 +108,51 @@ export function createApi() {
 
   app.get("/api/clients/:id", async (c) => {
     const row = await repo.getClient(c.get("db"), c.get("principal"), c.req.param("id"));
+    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  // Update a candidate (status / headline / consent) — f-139 P3.
+  app.patch("/api/clients/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      status?: string;
+      headline?: string | null;
+      consentStatus?: string;
+    };
+    if (body.status !== undefined && !clientStatus.enumValues.includes(body.status as repo.ClientStatus))
+      return c.json({ error: "invalid status" }, 400);
+    if (
+      body.consentStatus !== undefined &&
+      !consentStatus.enumValues.includes(body.consentStatus as repo.ConsentStatus)
+    )
+      return c.json({ error: "invalid consentStatus" }, 400);
+    const row = await repo.updateClient(c.get("db"), p, c.req.param("id"), {
+      status: body.status as repo.ClientStatus | undefined,
+      headline: body.headline,
+      consentStatus: body.consentStatus as repo.ConsentStatus | undefined,
+    });
+    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  // Applications (placements) for one candidate — f-139 P3.
+  app.get("/api/clients/:id/applications", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    return c.json(
+      await repo.listApplications(c.get("db"), p, { clientId: c.req.param("id") }),
+    );
+  });
+
+  // Update a track/profile (autopilot, criteria) — f-139 P3.
+  app.patch("/api/profiles/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      autopilot?: boolean;
+      targetFilters?: Record<string, unknown>;
+    };
+    const row = await repo.updateProfile(c.get("db"), p, c.req.param("id"), body);
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
   });
 

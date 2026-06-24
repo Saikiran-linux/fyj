@@ -4,6 +4,40 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-24 — f-139 Phase 3: Candidates roster + tabbed profile (+ PROD APPLY)
+
+Third phase of the operator-console rebuild (**f-139**), plus the first prod DB change of the
+session (the user provided the `neondb_owner` string for a one-off ops pass).
+
+- **Schema (migration `0002_easy_praxagora.sql`):** `clients` += `headline`, `consent_status`
+  (enum `active|pending|revoked`); `client_profiles` += `autopilot`; `placements` += `job_title`,
+  `company_name`, `tailored_resume_name`, `stage_changed_at`; `placement_status` enum **appended**
+  `drafted`/`ready_to_send`/`responded` (existing values keep their positions → plain `ADD VALUE`).
+- **Backend:** `repo.updateClient` (status/headline/consent), `repo.updateProfile`
+  (autopilot/criteria), `listApplications` now takes `{clientId}` and selects `job_title`/
+  `company_name`; `approveMatch` now queues the placement at `ready_to_send` + `stage_changed_at`.
+  Routes: `PATCH /api/clients/:id`, `GET /api/clients/:id/applications`, `PATCH /api/profiles/:id`.
+- **Web:** `clients/page.tsx` → candidate **roster** (cards: avatar, headline, status + consent
+  chips, Add candidate). `clients/[id]/page.tsx` → **tabbed profile**: hero (avatar, headline,
+  status/consent chips, Pause/Resume) + 3-stat row + tabs **Overview / Matches / Tracks /
+  Applications / Activity** (Matches = inline Approve/Decline; Tracks = autopilot toggle + résumé
+  upload, reusing the f-134 upload path). Types/api extended accordingly.
+- **GATES GREEN:** `./init.sh` (Worker tsc + `db:generate` no-drift + web tsc) and
+  `cd web && npm run build` (13 routes; `/clients` 2.97 kB, `/clients/[id]` 9.62 kB).
+- **PROD APPLY (this session):** migrations **0001 + 0002** and **`db/policies.sql`** applied to
+  Neon over the `@neondatabase/serverless` WS driver (raw 5432 is blocked in this container; same
+  trick as 06-20). Idempotent guards (`IF NOT EXISTS`, guarded `CREATE TYPE`, `ADD VALUE IF NOT
+  EXISTS`). Verified: the 6 `app.*` fns exist, `ops_app` has `execute`, and every new column + enum
+  value is present. **policies.sql compiling against the live schema validates the SQL functions**
+  (the Phase 1/2 dashboard + matcher fns) — the first real verification beyond typecheck this session.
+- **STILL NEEDS for the live URL:** `wrangler deploy` (CF token — to expose the new Worker routes)
+  and **merge to `main`** (Vercel auto-deploys `web/`). The DB is ready; the deployed Worker/UI are
+  still the 06-20 versions until then.
+- ⚠️ **`neondb_owner` password was pasted in chat — ROTATE it.**
+- **Next:** Phase 4 — Calendar (month/week/agenda from placements).
+
+---
+
 ## 2026-06-24 — f-139 Phase 2: Explore (match review) + match enrichment
 
 Second phase of the operator-console rebuild (**f-139**). Built the **Explore** match-review view

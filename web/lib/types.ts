@@ -8,6 +8,7 @@ export type Principal =
   | { principal: "client"; userId: string; orgId: string; clientId: string };
 
 export type ClientStatus = "active" | "paused" | "placed" | "archived";
+export type ConsentStatus = "active" | "pending" | "revoked";
 
 export interface Client {
   id: string;
@@ -16,7 +17,9 @@ export interface Client {
   fullName: string;
   email: string | null;
   phone: string | null;
+  headline: string | null;
   status: ClientStatus;
+  consentStatus: ConsentStatus;
   portalEnabled: boolean;
   notes: string | null;
   createdAt: string;
@@ -31,6 +34,7 @@ export interface ClientProfile {
   parsedProfile: Record<string, unknown> | null;
   embeddingModel: string | null;
   embeddedAt: string | null;
+  autopilot: boolean;
   createdAt: string;
 }
 
@@ -122,6 +126,8 @@ export interface ApplicationRow {
   clientName: string;
   jobId: string | null;
   companyId: string | null;
+  jobTitle: string | null;
+  companyName: string | null;
   status: string;
   appliedAt: string | null;
   updatedAt: string;

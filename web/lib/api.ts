@@ -16,6 +16,8 @@ import type {
   Match,
   MatchConfidence,
   ApproveMatchResult,
+  ClientStatus,
+  ConsentStatus,
 } from "./types";
 
 /**
@@ -89,6 +91,12 @@ export const api = {
     assignedOperatorId?: string;
     notes?: string;
   }) => req<Client>("/api/clients", { method: "POST", body: JSON.stringify(input) }),
+  updateClient: (
+    id: string,
+    input: { status?: ClientStatus; headline?: string | null; consentStatus?: ConsentStatus },
+  ) => req<Client>(`/api/clients/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  listClientApplications: (clientId: string) =>
+    req<ApplicationRow[]>(`/api/clients/${clientId}/applications`),
 
   listProfiles: (clientId: string) =>
     req<ClientProfile[]>(`/api/clients/${clientId}/profiles`),
@@ -97,6 +105,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  updateProfile: (
+    id: string,
+    input: { autopilot?: boolean; targetFilters?: Record<string, unknown> },
+  ) => req<ClientProfile>(`/api/profiles/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
   uploadResume: (clientId: string, profileId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);

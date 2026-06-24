@@ -9,6 +9,8 @@ import {
   memberships,
   feedback,
   auditLog,
+  clientStatus,
+  consentStatus,
   matchAction,
   matchConfidence,
   feedbackSignal,
@@ -28,6 +30,8 @@ import {
 
 export type MatchAction = (typeof matchAction.enumValues)[number];
 export type MatchConfidence = (typeof matchConfidence.enumValues)[number];
+export type ClientStatus = (typeof clientStatus.enumValues)[number];
+export type ConsentStatus = (typeof consentStatus.enumValues)[number];
 export type FeedbackSignal = (typeof feedbackSignal.enumValues)[number];
 export type MemberRole = (typeof memberRole.enumValues)[number];
 
@@ -401,34 +405,53 @@ export interface ApplicationRow {
   clientName: string;
   jobId: string | null;
   companyId: string | null;
+  jobTitle: string | null;
+  companyName: string | null;
   status: string;
   appliedAt: string | null;
   updatedAt: string;
 }
 
-export function listApplications(db: DB, who: Principal, limit = 50): Promise<ApplicationRow[]> {
+export interface ListApplicationsOptions {
+  clientId?: string;
+  limit?: number;
+}
+
+export function listApplications(
+  db: DB,
+  who: Principal,
+  opts: ListApplicationsOptions = {},
+): Promise<ApplicationRow[]> {
   return withTenant(db, who, async (tx) => {
-    const rows = await tx
+    const base = tx
       .select({
         id: placements.id,
         clientId: placements.clientId,
         clientName: clients.fullName,
         jobId: placements.jobId,
         companyId: placements.companyId,
+        jobTitle: placements.jobTitle,
+        companyName: placements.companyName,
         status: placements.status,
         appliedAt: placements.appliedAt,
         updatedAt: placements.updatedAt,
       })
       .from(placements)
-      .innerJoin(clients, eq(clients.id, placements.clientId))
+      .innerJoin(clients, eq(clients.id, placements.clientId));
+    const rows = await (opts.clientId
+      ? base.where(eq(placements.clientId, opts.clientId))
+      : base
+    )
       .orderBy(desc(placements.updatedAt))
-      .limit(limit);
+      .limit(opts.limit ?? 50);
     return rows.map((r) => ({
       id: r.id,
       clientId: r.clientId,
       clientName: r.clientName,
       jobId: r.jobId,
       companyId: r.companyId,
+      jobTitle: r.jobTitle,
+      companyName: r.companyName,
       status: r.status,
       appliedAt: r.appliedAt ? new Date(r.appliedAt).toISOString() : null,
       updatedAt: new Date(r.updatedAt).toISOString(),
@@ -548,7 +571,8 @@ export function approveMatch(
           campaignId: m.campaignId,
           jobId: m.jobId,
           companyId: m.companyId,
-          status: "lead",
+          status: "ready_to_send",
+          stageChangedAt: new Date(),
           createdBy: who.userId,
         })
         .returning({ id: placements.id });
@@ -561,5 +585,55 @@ export function approveMatch(
       action: (updated?.action ?? "shortlisted") as MatchAction,
       placementId,
     };
+  });
+}
+
+// ── candidate + track updates (f-139 P3) ───────────────────────────────
+export interface UpdateClientInput {
+  status?: ClientStatus;
+  headline?: string | null;
+  consentStatus?: ConsentStatus;
+}
+
+export function updateClient(db: DB, who: Principal, clientId: string, input: UpdateClientInput) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .update(clients)
+      .set({
+        ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.headline !== undefined ? { headline: input.headline } : {}),
+        ...(input.consentStatus !== undefined ? { consentStatus: input.consentStatus } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(clients.id, clientId))
+      .returning();
+    if (row) await audit(tx, who, "client.update", "client", row.id, { ...input });
+    return row ?? null;
+  });
+}
+
+export interface UpdateProfileInput {
+  autopilot?: boolean;
+  targetFilters?: Record<string, unknown>;
+}
+
+export function updateProfile(
+  db: DB,
+  who: Principal,
+  profileId: string,
+  input: UpdateProfileInput,
+) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .update(clientProfiles)
+      .set({
+        ...(input.autopilot !== undefined ? { autopilot: input.autopilot } : {}),
+        ...(input.targetFilters !== undefined ? { targetFilters: input.targetFilters } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(clientProfiles.id, profileId))
+      .returning();
+    if (row) await audit(tx, who, "profile.update", "client_profile", row.id, { autopilot: input.autopilot });
+    return row ?? null;
   });
 }
