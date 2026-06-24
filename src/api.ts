@@ -222,6 +222,47 @@ export function createApi() {
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
   });
 
+  // ── dashboard analytics (f-139) ──────────────────────────────────────
+  // Org-wide rollups for the operator home. Any staff seat (incl. viewer) may
+  // read; the org scoping + cross-client aggregation happens in the SECURITY
+  // DEFINER functions the repo calls.
+  app.get("/api/dashboard/kpis", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    return c.json(await repo.dashboardKpis(c.get("db"), p));
+  });
+
+  app.get("/api/dashboard/funnel", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    return c.json(await repo.dashboardFunnel(c.get("db"), p));
+  });
+
+  app.get("/api/dashboard/leaderboard", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    return c.json(await repo.dashboardLeaderboard(c.get("db"), p));
+  });
+
+  app.get("/api/dashboard/trends", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    return c.json(await repo.dashboardTrends(c.get("db"), p));
+  });
+
+  app.get("/api/dashboard/activity", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    return c.json(await repo.dashboardActivity(c.get("db"), p));
+  });
+
+  // Top live applications (placements), RLS-scoped to the caller's book.
+  app.get("/api/applications", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    return c.json(await repo.listApplications(c.get("db"), p));
+  });
+
   // ── members (admin) ──────────────────────────────────────────────────
   app.get("/api/members", async (c) => {
     const p = c.get("principal");

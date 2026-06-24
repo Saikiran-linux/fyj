@@ -7,6 +7,12 @@ import type {
   MatchActionValue,
   Principal,
   StaffRole,
+  DashboardKpis,
+  FunnelRow,
+  OperatorStat,
+  TrendPoint,
+  ActivityEvent,
+  ApplicationRow,
 } from "./types";
 
 /**
@@ -113,4 +119,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ userId, role }),
     }),
+
+  // Dashboard analytics (f-136) — org-wide rollups for the operator home.
+  dashboardKpis: () => req<DashboardKpis>("/api/dashboard/kpis"),
+  dashboardFunnel: () => req<FunnelRow[]>("/api/dashboard/funnel"),
+  dashboardLeaderboard: () => req<OperatorStat[]>("/api/dashboard/leaderboard"),
+  dashboardTrends: () => req<TrendPoint[]>("/api/dashboard/trends"),
+  dashboardActivity: () => req<ActivityEvent[]>("/api/dashboard/activity"),
+  listApplications: () => req<ApplicationRow[]>("/api/applications"),
 };
