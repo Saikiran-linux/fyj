@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Check, X, ExternalLink } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Chip } from "@/components/ui/chip";
+import { CommandBar } from "@/components/command-bar";
 import { api } from "@/lib/api";
 import type { Match, MatchConfidence } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -237,6 +239,7 @@ function Drawer({
 }
 
 export default function ExplorePage() {
+  const router = useRouter();
   const [matches, setMatches] = useState<Match[] | null>(null);
   const [filter, setFilter] = useState<"all" | MatchConfidence>("all");
   const [selected, setSelected] = useState<Match | null>(null);
@@ -300,6 +303,10 @@ export default function ExplorePage() {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="mb-5">
+        <CommandBar onSubmit={(q) => router.push(`/jobs?q=${encodeURIComponent(q)}`)} />
       </div>
 
       {error && (
