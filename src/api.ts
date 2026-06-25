@@ -14,9 +14,12 @@ import {
   memberRole,
 } from "./db/schema";
 import { parseResume } from "./resume";
-import { embedText, embedRaw } from "./embeddings";
-import { summarizeResume } from "./summarize";
-import { searchAndHydrate, getJob, type JobFilters } from "./index-client";
+import { embedText } from "./embeddings";
+import { searchAndHydrate, getJob, searchJobs, type JobFilters } from "./index-client";
+import { runIntake } from "./graph/intake";
+import { enrichOne } from "./graph/enrich";
+import { tailorResume } from "./graph/tailor";
+import { hasAnthropic } from "./graph/llm";
 
 type Vars = { db: DB; principal: Principal };
 
@@ -79,6 +82,71 @@ function authUserError(e: unknown): string {
     if (body?.code) return body.code;
   }
   return e instanceof Error ? e.message : "could not create user";
+}
+
+function profileSummary(parsed: unknown): string {
+  const p = parsed as { summary?: string } | null;
+  return (p?.summary ?? "").toString();
+}
+
+/**
+ * Background (waitUntil) enrichment of a campaign's freshly surfaced matches.
+ * Runs the LangGraph enrich graph per match with bounded concurrency. Opens its
+ * OWN DB connection — the per-request Hyperdrive pool is closed once the response
+ * is flushed, so background work must not borrow it.
+ */
+async function enrichCampaignBackground(env: Env, who: Principal, campaignId: string): Promise<void> {
+  if (!hasAnthropic(env)) return; // rationale/skills need Claude; no-op until the key is set
+  const { db, close } = createDb(env.HYPERDRIVE.connectionString);
+  try {
+    const ctx = await repo.getCampaignProfile(db, who, campaignId);
+    const summary = ctx ? profileSummary(ctx.parsedProfile) || (ctx.resumeText ?? "") : "";
+    if (!summary) return;
+    const pending = await repo.listMatchesToEnrich(db, who, campaignId, 25);
+    const queue = [...pending];
+    const worker = async () => {
+      for (let m = queue.shift(); m; m = queue.shift()) {
+        try {
+          const job = await getJob(env, m.jobId, m.companyId);
+          if (!job) continue;
+          const e = await enrichOne(env, summary, job);
+          await repo.enrichMatch(db, who, m.id, e);
+        } catch (err) {
+          console.error(JSON.stringify({ at: "enrich", matchId: m.id, err: String(err) }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: 5 }, worker));
+  } catch (err) {
+    console.error(JSON.stringify({ at: "enrichCampaign", campaignId, err: String(err) }));
+  } finally {
+    await close();
+  }
+}
+
+/** Background (waitUntil) résumé tailoring for an approved match (own DB conn). */
+async function tailorMatchBackground(env: Env, who: Principal, matchId: string): Promise<void> {
+  if (!hasAnthropic(env)) return;
+  const { db, close } = createDb(env.HYPERDRIVE.connectionString);
+  try {
+    const ctx = await repo.getTailoringContext(db, who, matchId);
+    if (!ctx || !ctx.resumeText) return;
+    const job = await getJob(env, ctx.jobId, ctx.companyId);
+    if (!job) return;
+    const result = await tailorResume(env, ctx.resumeText, job, profileSummary(ctx.parsedProfile));
+    const resumeName = `${(job.title ?? "role").replace(/[^a-z0-9]+/gi, "_").slice(0, 48)}.md`;
+    await repo.saveTailoredResume(db, who, {
+      matchId,
+      clientId: ctx.clientId,
+      markdown: result.markdown,
+      model: result.model,
+      resumeName,
+    });
+  } catch (err) {
+    console.error(JSON.stringify({ at: "tailorMatch", matchId, err: String(err) }));
+  } finally {
+    await close();
+  }
 }
 
 /**
@@ -224,15 +292,22 @@ export function createApi() {
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
   });
 
-  // Update a candidate (status / headline / consent) — f-139 P3.
+  // Update a candidate — core details (name/email/phone/headline/notes) plus
+  // status / consent (f-139 P3, extended f-144 for the edit-profile modal).
   app.patch("/api/clients/:id", async (c) => {
     const p = c.get("principal");
     if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
     const body = (await c.req.json().catch(() => ({}))) as {
+      fullName?: string;
+      email?: string | null;
+      phone?: string | null;
       status?: string;
       headline?: string | null;
       consentStatus?: string;
+      notes?: string | null;
     };
+    if (body.fullName !== undefined && !body.fullName.trim())
+      return c.json({ error: "fullName cannot be empty" }, 400);
     if (body.status !== undefined && !clientStatus.enumValues.includes(body.status as repo.ClientStatus))
       return c.json({ error: "invalid status" }, 400);
     if (
@@ -241,11 +316,39 @@ export function createApi() {
     )
       return c.json({ error: "invalid consentStatus" }, 400);
     const row = await repo.updateClient(c.get("db"), p, c.req.param("id"), {
+      fullName: body.fullName?.trim(),
+      email: body.email,
+      phone: body.phone,
       status: body.status as repo.ClientStatus | undefined,
       headline: body.headline,
       consentStatus: body.consentStatus as repo.ConsentStatus | undefined,
+      notes: body.notes,
     });
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  // Permanently delete a candidate (admin only — matches the clients_delete RLS
+  // policy). The DB cascade removes profiles/campaigns/matches/reports/placements/
+  // feedback; we additionally purge the candidate's résumé objects from R2 since
+  // object storage isn't reached by the FK cascade.
+  app.delete("/api/clients/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    if (p.role !== "admin") return c.json({ error: "admin_only" }, 403);
+    const clientId = c.req.param("id");
+    const result = await repo.deleteClient(c.get("db"), p, clientId);
+    if (!result) return c.json({ error: "not_found" }, 404);
+    // Best-effort R2 purge — the DB row is already gone, so a storage hiccup must
+    // not fail the request (it would only leave orphan objects, logged below).
+    try {
+      const prefix = `resumes/${p.orgId}/${clientId}/`;
+      const listed = await c.env.RESUMES.list({ prefix });
+      const keys = listed.objects.map((o) => o.key);
+      if (keys.length) await c.env.RESUMES.delete(keys);
+    } catch (err) {
+      console.error(JSON.stringify({ at: "deleteClient.r2", clientId, err: String(err) }));
+    }
+    return c.json({ ok: true, id: clientId });
   });
 
   // Applications (placements) for one candidate — f-139 P3.
@@ -323,26 +426,65 @@ export function createApi() {
       httpMetadata: { contentType: file.type || "application/octet-stream" },
     });
 
-    // Match how the index embeds JOBS: summarize the resume into the same
-    // JD-style 14-field precis + title/signal prelude (src/summarize.ts mirrors
-    // fyj_scanner's summarize.mjs + buildJobText), then embed that VERBATIM so
-    // the resume lands in the job vector distribution. Embedding raw prose would
-    // rank worse — jobs.embedding comes from the summary, not the description.
-    const summary = await summarizeResume(c.env, parsed.text);
-    const { embedding, model } = await embedRaw(c.env, summary.embedInput);
+    // Intake graph (LangGraph): extract structured candidate fields (gpt-4o-mini),
+    // summarize + embed into the index's vector space (reuses f-134), and search
+    // the index for the top matches — all in one graph run.
+    const intake = await runIntake(c.env, parsed.text);
+    if (!intake.embedding) return c.json({ error: "could not embed resume" }, 422);
+
     const row = await repo.attachResume(c.get("db"), p, profileId, {
       resumeStoragePath: storagePath,
       resumeText: parsed.text,
       parsedProfile: {
         ...parsed.profile,
         kind: parsed.kind,
-        title: summary.title,
-        summary: summary.summary,
+        candidate: intake.candidate,
+        summary: intake.embedInput, // JD-style precis — reused by enrichment/tailoring
       },
-      embedding,
-      embeddingModel: model,
+      embedding: intake.embedding,
+      embeddingModel: intake.embeddingModel ?? "text-embedding-3-small",
     });
-    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+    if (!row) return c.json({ error: "not_found" }, 404);
+
+    // Auto-populate the candidate + targeting criteria, then activate the
+    // campaign and surface the matches the graph found.
+    if (intake.candidate)
+      await repo.applyResumeExtraction(c.get("db"), p, clientId, profileId, intake.candidate);
+    const campaignId = await repo.ensureCampaign(c.get("db"), p, profileId, true);
+    if (campaignId && intake.matches.length)
+      await repo.recordRun(c.get("db"), p, campaignId, intake.matches);
+    if (campaignId)
+      c.executionCtx.waitUntil(enrichCampaignBackground(c.env, p, campaignId));
+
+    return c.json({ profile: row, surfaced: intake.matches.length });
+  });
+
+  // On-demand "Find matches" for a profile/campaign — surfaces the top ~25 into
+  // campaign_matches now (dedup in DB) and enriches them in the background.
+  app.post("/api/profiles/:id/match", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const profile = await repo.getProfile(c.get("db"), p, c.req.param("id"));
+    if (!profile) return c.json({ error: "not_found" }, 404);
+    if (!profile.embedding) return c.json({ error: "profile_not_embedded" }, 409);
+
+    const campaignId = await repo.ensureCampaign(c.get("db"), p, profile.id, true);
+    if (!campaignId) return c.json({ error: "no_campaign" }, 409);
+    // Drop `families` defensively — the index's family vocab doesn't match our
+    // values and zeroes results (also guards profiles embedded before this fix).
+    const { families: _drop, ...tf } = (profile.targetFilters as JobFilters) ?? {};
+    const hits = await searchJobs(c.env, profile.embedding as number[], {
+      ...tf,
+      targetOnly: tf.targetOnly ?? true,
+    });
+    const matches = hits
+      .slice(0, 25)
+      .map((m, i) => ({ jobId: m.jobId, companyId: m.companyId, score: m.score, rank: i + 1 }));
+    if (matches.length) await repo.recordRun(c.get("db"), p, campaignId, matches);
+    c.executionCtx.waitUntil(enrichCampaignBackground(c.env, p, campaignId));
+
+    const surfaced = await repo.listMatches(c.get("db"), p, { candidateId: profile.clientId });
+    return c.json({ surfaced: matches.length, matches: surfaced });
   });
 
   // ── index search (f-134) ─────────────────────────────────────────────
@@ -428,8 +570,31 @@ export function createApi() {
   app.post("/api/matches/:id/approve", async (c) => {
     const p = c.get("principal");
     if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
-    const result = await repo.approveMatch(c.get("db"), p, c.req.param("id"));
-    return result ? c.json(result) : c.json({ error: "not_found" }, 404);
+    const matchId = c.req.param("id");
+    const result = await repo.approveMatch(c.get("db"), p, matchId);
+    if (!result) return c.json({ error: "not_found" }, 404);
+    // Tailor the master résumé to this job in the background (LangGraph tailor
+    // graph: draft → critique → revise). The editable Markdown lands on the match.
+    c.executionCtx.waitUntil(tailorMatchBackground(c.env, p, matchId));
+    return c.json({ ...result, tailoring: hasAnthropic(c.env) });
+  });
+
+  // Tailored résumé (Markdown) for an approved match — read + operator edits.
+  app.get("/api/matches/:id/resume", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const row = await repo.getTailoredResume(c.get("db"), p, c.req.param("id"));
+    if (!row) return c.json({ status: "pending", markdown: null });
+    return c.json({ status: "ready", markdown: row.markdown, model: row.model, generatedAt: row.generatedAt });
+  });
+
+  app.put("/api/matches/:id/resume", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as { markdown?: string };
+    if (typeof body.markdown !== "string") return c.json({ error: "markdown required" }, 400);
+    const row = await repo.updateTailoredResume(c.get("db"), p, c.req.param("id"), body.markdown);
+    return row ? c.json({ ok: true }) : c.json({ error: "not_found" }, 404);
   });
 
   // ── dashboard analytics (f-139) ──────────────────────────────────────
