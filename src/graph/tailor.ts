@@ -41,8 +41,11 @@ const TailorState = Annotation.Root({
 });
 
 export function buildTailorGraph(env: Env) {
+  // Node names must not collide with state-channel names (LangGraph rejects a
+  // node called "draft"/"critique" when those are also state attributes), so the
+  // nodes are named write/review/revise while the channels stay draft/critique.
   const graph = new StateGraph(TailorState)
-    .addNode("draft", async (s) => {
+    .addNode("write", async (s) => {
       const draft = await anthropicText(env, {
         system: DRAFT_SYSTEM,
         user: `TARGET JOB:\n${s.jobText}\n\nCANDIDATE SUMMARY:\n${s.candidateSummary}\n\nMASTER RÉSUMÉ:\n${s.master}`,
@@ -52,7 +55,7 @@ export function buildTailorGraph(env: Env) {
       });
       return { draft };
     })
-    .addNode("critique", async (s) => {
+    .addNode("review", async (s) => {
       const critique = await anthropicJson<Critique>(env, {
         system: CRITIQUE_SYSTEM,
         user: `JOB:\n${s.jobText}\n\nMASTER RÉSUMÉ:\n${s.master}\n\nTAILORED RÉSUMÉ:\n${s.draft}`,
@@ -71,12 +74,12 @@ export function buildTailorGraph(env: Env) {
       });
       return { draft, iterations: (s.iterations ?? 0) + 1 };
     })
-    .addEdge(START, "draft")
-    .addEdge("draft", "critique")
-    .addConditionalEdges("critique", (s) =>
+    .addEdge(START, "write")
+    .addEdge("write", "review")
+    .addConditionalEdges("review", (s) =>
       s.critique && !s.critique.pass && (s.iterations ?? 0) < MAX_ITERATIONS ? "revise" : END,
     )
-    .addEdge("revise", "critique");
+    .addEdge("revise", "review");
   return graph.compile();
 }
 
