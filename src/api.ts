@@ -70,6 +70,26 @@ function authUserError(e: unknown): string {
 export function createApi() {
   const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
+  // Surface the real cause of a failed request. Drizzle wraps DB errors as
+  // "Failed query: …" and hides the underlying Postgres message (permission /
+  // RLS / constraint) on `.cause` — log the whole chain so failures are
+  // diagnosable from `wrangler tail` instead of an opaque 500.
+  app.onError((err, c) => {
+    const cause = (err as { cause?: unknown }).cause;
+    console.error(
+      JSON.stringify({
+        at: "onError",
+        path: c.req.path,
+        method: c.req.method,
+        message: err instanceof Error ? err.message : String(err),
+        cause: cause instanceof Error ? cause.message : cause ? String(cause) : null,
+        code: (cause as { code?: string } | undefined)?.code ?? null,
+      }),
+    );
+    return c.json({ error: "internal_error" }, 500);
+  });
+
+
   app.get("/health", (c) => c.json({ ok: true, service: "fyj-ops-console" }));
 
   // CORS for the browser UI (a different origin, e.g. *.vercel.app). Credentials
