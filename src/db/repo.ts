@@ -112,19 +112,26 @@ export function createClient(db: DB, who: Principal, input: NewClientInput) {
         ? who.userId
         : (input.assignedOperatorId ?? null);
 
-    const [row] = await tx
-      .insert(clients)
-      .values({
-        orgId: who.orgId,
-        fullName: input.fullName,
-        email: input.email ?? null,
-        phone: input.phone ?? null,
-        assignedOperatorId,
-        notes: input.notes ?? null,
-        createdBy: who.userId,
-      })
-      .returning();
-    if (row) await audit(tx, who, "client.create", "client", row.id, { fullName: input.fullName });
+    // We generate the id app-side and INSERT *without* RETURNING. RETURNING
+    // would make Postgres apply the clients SELECT policy to the new row, whose
+    // `clients_select` USING calls app.can_access_client(id) — which re-queries
+    // clients for that id, but the row written by this very command isn't yet
+    // visible to that STABLE sub-query's snapshot, so it returns false and the
+    // insert fails with "violates row-level security policy". Reading the row
+    // back in a separate statement (after the command-counter advances) sees it.
+    const id = crypto.randomUUID();
+    await tx.insert(clients).values({
+      id,
+      orgId: who.orgId,
+      fullName: input.fullName,
+      email: input.email ?? null,
+      phone: input.phone ?? null,
+      assignedOperatorId,
+      notes: input.notes ?? null,
+      createdBy: who.userId,
+    });
+    await audit(tx, who, "client.create", "client", id, { fullName: input.fullName });
+    const [row] = await tx.select().from(clients).where(eq(clients.id, id)).limit(1);
     return row ?? null;
   });
 }
