@@ -4,6 +4,45 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-25 — f-141: end-to-end candidate value loop (LangGraph intake / enrich / tailor)
+
+Delivered the product's core value loop: **upload résumé → AI extracts the candidate + targeting
+criteria → 20–25 ranked, explained matches → operator accepts/declines → accepting tailors the
+master résumé** (editable Markdown, client-side PDF). Code landed in commit `a7a2a8d` (already
+pushed); this session set the missing secret and verified the LLM path.
+
+- **LangGraph.js embedded in the Worker** via `@langchain/langgraph/web` (zod pinned to v3 — v4
+  crashes the workerd runtime at init). Three graphs in `src/graph/`: `intake.ts` (extract
+  `gpt-4o-mini` → summarize → embed → search), `enrich.ts` (per-match rationale / matched / missing /
+  guardrails via Claude Haiku), `tailor.ts` (draft → critique → revise, ≤2 iterations; Sonnet
+  draft/revise + Haiku critique). `src/graph/llm.ts` holds Workers-safe raw-fetch OpenAI/Anthropic
+  helpers; `hasAnthropic()` makes enrichment/tailoring a graceful no-op when the key is absent.
+- **Backend:** `db/policies.sql` adds `app.upsert_campaign_for_profile` (SECURITY DEFINER, granted
+  `ops_app`) so a UI "campaign" = a `client_profiles` row + its 1:1 `campaigns` row; repo
+  `createProfile` auto-creates the campaign; `runMatchNow` / `applyResumeExtraction` (populates
+  headline + index-safe `target_filters`; dropped `families` from index filters — the index vocab
+  zeroed results), `enrichMatch`, `approveMatch` tailoring + `reports` storage. `api`: resume route
+  runs the intake graph then enriches in `waitUntil`; `POST /api/profiles/:id/match` (on-demand);
+  approve triggers tailoring in `waitUntil`; `GET/PUT /api/matches/:id/resume`.
+- **Web:** Campaigns panel (`CampaignCard` + Find matches), `MatchRow` rationale/skills/guardrails +
+  Approve/Decline, tailored-résumé drawer (poll → edit → Save → print-to-PDF).
+- **This session — unblock + verify the LLM path:** `./init.sh` green (Worker tsc + `db:generate`
+  no-drift + web tsc). Set **`ANTHROPIC_API_KEY`** as a Worker secret (`wrangler secret put`, via
+  stdin) → live version `5c974d1c` (a "Secret Change" deploy over the 06:46 f-141 bundle
+  `c7cb3894`). Validated the key directly against both model IDs the code calls
+  (`claude-haiku-4-5-20251001`, `claude-sonnet-4-6` — both returned 200/OK). Live Worker healthy and
+  auth-enforced (`401 unauthenticated`). A full `wrangler deploy` was intentionally **not** run (the
+  auto-mode classifier flagged production deploy as unauthorized, and it's unnecessary — the live
+  bundle already carries the f-141 code).
+- **Remaining:** the authenticated **UI click-through** (upload a real résumé → confirm rationale
+  fills in within seconds → Approve → tailored résumé) — not drivable from the ops container (no
+  operator login / `ADMIN_BOOTSTRAP_SECRET` here). Best done by the user at the Vercel app, or hand
+  me an operator login to drive the API-level e2e.
+- **SECURITY:** the `ANTHROPIC_API_KEY` and a Cloudflare API token were pasted into chat this
+  session — **rotate both** once verification is done.
+
+---
+
 ## 2026-06-25 — f-140: admin→operator→client onboarding MVP (username/password)
 
 The console's onboarding model was inverted to match the product: **public self-sign-up is closed**
