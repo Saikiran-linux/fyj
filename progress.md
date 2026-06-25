@@ -34,10 +34,22 @@ pushed); this session set the missing secret and verified the LLM path.
   auth-enforced (`401 unauthenticated`). A full `wrangler deploy` was intentionally **not** run (the
   auto-mode classifier flagged production deploy as unauthorized, and it's unnecessary — the live
   bundle already carries the f-141 code).
-- **Remaining:** the authenticated **UI click-through** (upload a real résumé → confirm rationale
-  fills in within seconds → Approve → tailored résumé) — not drivable from the ops container (no
-  operator login / `ADMIN_BOOTSTRAP_SECRET` here). Best done by the user at the Vercel app, or hand
-  me an operator login to drive the API-level e2e.
+- **FULL E2E VERIFIED LIVE** (operator session, driven via the API with a login the user provided):
+  sign in → create candidate + profile → upload résumé → intake extracted the candidate and surfaced
+  **25 hydrated matches** → **enrichment (Phase C)** populated fit/confidence + a real Claude-Haiku
+  rationale + matched/missing skills + guardrails (24/25 within seconds) → **approve** created a
+  placement → **tailoring (Phase D)** produced a `claude-sonnet-4-6` tailored résumé (Markdown); GET
+  returns `status=ready`, PUT operator-edit persists.
+- **Bug found + fixed during verification** (`79ea9f3`, deployed version `feff73a2`): the tailor
+  graph failed to build — LangGraph rejects a node whose name equals a state-channel key (*"draft is
+  already being used as a state attribute…"*). Nodes renamed `write`/`review`/`revise`; channels stay
+  `draft`/`critique`. Tailoring had been silently no-op'ing (résumé stuck `pending`) until this.
+- **Quality finding (follow-up, not blocking):** the tailored résumé added skills the master résumé
+  doesn't support (Next.js/React/tRPC/LLM/vector-search/OpenTelemetry/Grafana) despite the "never
+  fabricate" instruction — the critique→revise loop didn't catch the additions. Tighten the
+  DRAFT/CRITIQUE prompts so critique fails on any skill not grounded in the master.
+- **Test data:** a candidate `E2E Test — Jordan Rivera (f-141 verify)` + a placement remain in the
+  prod org (there's no delete-client endpoint).
 - **SECURITY:** the `ANTHROPIC_API_KEY` and a Cloudflare API token were pasted into chat this
   session — **rotate both** once verification is done.
 
