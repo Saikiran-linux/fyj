@@ -10,7 +10,7 @@
 export const HAIKU = "claude-haiku-4-5-20251001";
 export const SONNET = "claude-sonnet-4-6";
 
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 4;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function hasAnthropic(env: Env): boolean {
