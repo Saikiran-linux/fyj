@@ -4,6 +4,115 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-25 — f-144: candidate Overview heatmap + agenda + edit-profile modal
+
+Enriched the candidate profile **Overview** tab and added full-detail editing.
+
+- The two requested `devl.dev` registry items are **mock showcase pages** (the year-heatmap fetches the
+  GitHub contributions API for a username; the agenda is static) and pull `@coss/*` deps + an
+  `AvatarImage`/`Skeleton` API this project doesn't have — so a verbatim `shadcn add` would drop in
+  disconnected demos. Instead I **adapted their visual language** into data-driven components:
+  - `web/components/candidate-heatmap.tsx` — GitHub-style 53-week grid (teal quartile scale, month/
+    weekday labels, legend, active-days + longest/current streak), built from a date→count map over
+    the candidate's `matches.surfacedAt` + applications `appliedAt`/`updatedAt`.
+  - `web/components/candidate-agenda.tsx` — tone-bar timeline grouped by day (lucide icons), from the
+    candidate's applications/placements.
+  - `web/components/edit-candidate-dialog.tsx` — centred modal (Esc + scroll-lock) editing
+    name/headline/email/phone/status/consent/notes via `api.updateClient`, plus a read-only
+    campaigns + résumé-text viewer.
+- **Backend:** `updateClient` (repo) + `PATCH /api/clients/:id` extended to accept
+  `fullName/email/phone/notes` (was status/headline/consent only); empty name rejected. No schema
+  migration — those columns already exist.
+- **Wiring:** Overview renders heatmap + agenda in a 2-col grid; an **Edit profile** (pencil) button
+  in the hero opens the modal; `lib/api.ts` `updateClient` input widened.
+- Gates green: `./init.sh` + web `next build` (`/clients/[id]` 15.6 kB). Backend field persistence
+  needs a Worker deploy; the UI ships on PR merge (Vercel).
+
+---
+
+## 2026-06-25 — f-141: end-to-end candidate value loop (LangGraph intake / enrich / tailor)
+
+Delivered the product's core value loop: **upload résumé → AI extracts the candidate + targeting
+criteria → 20–25 ranked, explained matches → operator accepts/declines → accepting tailors the
+master résumé** (editable Markdown, client-side PDF). Code landed in commit `a7a2a8d` (already
+pushed); this session set the missing secret and verified the LLM path.
+
+- **LangGraph.js embedded in the Worker** via `@langchain/langgraph/web` (zod pinned to v3 — v4
+  crashes the workerd runtime at init). Three graphs in `src/graph/`: `intake.ts` (extract
+  `gpt-4o-mini` → summarize → embed → search), `enrich.ts` (per-match rationale / matched / missing /
+  guardrails via Claude Haiku), `tailor.ts` (draft → critique → revise, ≤2 iterations; Sonnet
+  draft/revise + Haiku critique). `src/graph/llm.ts` holds Workers-safe raw-fetch OpenAI/Anthropic
+  helpers; `hasAnthropic()` makes enrichment/tailoring a graceful no-op when the key is absent.
+- **Backend:** `db/policies.sql` adds `app.upsert_campaign_for_profile` (SECURITY DEFINER, granted
+  `ops_app`) so a UI "campaign" = a `client_profiles` row + its 1:1 `campaigns` row; repo
+  `createProfile` auto-creates the campaign; `runMatchNow` / `applyResumeExtraction` (populates
+  headline + index-safe `target_filters`; dropped `families` from index filters — the index vocab
+  zeroed results), `enrichMatch`, `approveMatch` tailoring + `reports` storage. `api`: resume route
+  runs the intake graph then enriches in `waitUntil`; `POST /api/profiles/:id/match` (on-demand);
+  approve triggers tailoring in `waitUntil`; `GET/PUT /api/matches/:id/resume`.
+- **Web:** Campaigns panel (`CampaignCard` + Find matches), `MatchRow` rationale/skills/guardrails +
+  Approve/Decline, tailored-résumé drawer (poll → edit → Save → print-to-PDF).
+- **This session — unblock + verify the LLM path:** `./init.sh` green (Worker tsc + `db:generate`
+  no-drift + web tsc). Set **`ANTHROPIC_API_KEY`** as a Worker secret (`wrangler secret put`, via
+  stdin) → live version `5c974d1c` (a "Secret Change" deploy over the 06:46 f-141 bundle
+  `c7cb3894`). Validated the key directly against both model IDs the code calls
+  (`claude-haiku-4-5-20251001`, `claude-sonnet-4-6` — both returned 200/OK). Live Worker healthy and
+  auth-enforced (`401 unauthenticated`). A full `wrangler deploy` was intentionally **not** run (the
+  auto-mode classifier flagged production deploy as unauthorized, and it's unnecessary — the live
+  bundle already carries the f-141 code).
+- **FULL E2E VERIFIED LIVE** (operator session, driven via the API with a login the user provided):
+  sign in → create candidate + profile → upload résumé → intake extracted the candidate and surfaced
+  **25 hydrated matches** → **enrichment (Phase C)** populated fit/confidence + a real Claude-Haiku
+  rationale + matched/missing skills + guardrails (24/25 within seconds) → **approve** created a
+  placement → **tailoring (Phase D)** produced a `claude-sonnet-4-6` tailored résumé (Markdown); GET
+  returns `status=ready`, PUT operator-edit persists.
+- **Bug found + fixed during verification** (`79ea9f3`, deployed version `feff73a2`): the tailor
+  graph failed to build — LangGraph rejects a node whose name equals a state-channel key (*"draft is
+  already being used as a state attribute…"*). Nodes renamed `write`/`review`/`revise`; channels stay
+  `draft`/`critique`. Tailoring had been silently no-op'ing (résumé stuck `pending`) until this.
+- **Quality finding (follow-up, not blocking):** the tailored résumé added skills the master résumé
+  doesn't support (Next.js/React/tRPC/LLM/vector-search/OpenTelemetry/Grafana) despite the "never
+  fabricate" instruction — the critique→revise loop didn't catch the additions. Tighten the
+  DRAFT/CRITIQUE prompts so critique fails on any skill not grounded in the master.
+- **Test data:** a candidate `E2E Test — Jordan Rivera (f-141 verify)` + a placement remain in the
+  prod org (there's no delete-client endpoint).
+- **SECURITY:** the `ANTHROPIC_API_KEY` and a Cloudflare API token were pasted into chat this
+  session — **rotate both** once verification is done.
+
+---
+
+## 2026-06-25 — f-140: admin→operator→client onboarding MVP (username/password)
+
+The console's onboarding model was inverted to match the product: **public self-sign-up is closed**
+and accounts are **created by an admin**, not self-registered (the old flow had every signup mint a
+separate org via a `user.create.after` hook, then invite-by-raw-user-id).
+
+- **Auth (server):** added the Better Auth `username` plugin (`src/auth.ts`; client
+  `usernameClient()` in `web/lib/auth-client.ts`) — staff sign in by **username**. Migration
+  `drizzle/0003_curious_triton.sql` adds `user.username` (unique) + `display_username`. Removed the
+  org-bootstrap `databaseHook`; `src/api.ts` **hard-blocks** `POST /api/auth/sign-up/**` (403).
+- **Admin creates operators:** `POST /api/members {username,password,name?,role}` (admin-gated)
+  creates the auth user via `auth.api.signUpEmail` directly (off the blocked route, so no cookie is
+  minted for the admin; a non-deliverable placeholder email is synthesized) then
+  `repo.addStaffMembership` adds an **active** membership in the admin's org. `listMembers` now joins
+  `user` for username/name.
+- **Seed path:** `POST /api/seed/org-admin` (guarded by `ADMIN_BOOTSTRAP_SECRET`) mints the first
+  org + admin via `app.bootstrap_org_for_user`. Documented in `docs/INFRA-SETUP.md` (+ secret,
+  + rewritten smoke test).
+- **Web:** `sign-in/page.tsx` → username/password only, no sign-up toggle; `members/page.tsx` →
+  "Create operator" form (username/password/name/role) + usernames in the table.
+- **Client profile to the attached design** (decoded from the standalone HTML's gzip+base64 bundle):
+  `clients/[id]/page.tsx` gains a cover-band hero + overlapping 96px avatar, meta row, skill tags,
+  5-stat row (matches/in-flight/response%/interviews/offers), and **expandable match rows**
+  (rationale, matched skills, gaps, guardrails, confidence) with **Decline** / **Approve & queue
+  résumé** — the operator accept/decline, wired to existing `approveMatch`/`declineMatch`.
+- **GATES GREEN:** `npm run typecheck` (Worker) + `cd web && npm run typecheck` + `npm run build`
+  (13 routes; `/clients/[id]` 5.37 kB, `/members` 3.84 kB, `/sign-in` 4.45 kB) + `db:generate`
+  no-drift. NOT runtime-verified (no infra this session): before live, apply migration `0003` to
+  Neon, set `ADMIN_BOOTSTRAP_SECRET`, `wrangler deploy`, and seed the first admin.
+
+---
+
 ## 2026-06-24 — f-139 Phase 4: Calendar — f-139 COMPLETE
 
 Final phase of the operator-console rebuild (**f-139**). No schema/migration — schedule events are

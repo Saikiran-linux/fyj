@@ -50,7 +50,9 @@ export async function runCampaignMatch(
 
   // 2. Incremental search against the index — only jobs newer than last run.
   const embedding = JSON.parse(row.embedding) as number[];
-  const tf = row.target_filters ?? {};
+  // Drop `families` — the index's family vocab doesn't match our extracted
+  // values and zeroes results (see f-141 intake notes).
+  const { families: _drop, ...tf } = row.target_filters ?? {};
   const filters: JobFilters = {
     ...tf,
     since: row.last_run_at ? new Date(row.last_run_at).toISOString() : undefined,

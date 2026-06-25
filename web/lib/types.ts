@@ -76,6 +76,9 @@ export interface Membership {
   userId: string;
   role: StaffRole;
   status: "active" | "invited" | "disabled";
+  // joined from the auth user (null for legacy rows without a username)
+  username: string | null;
+  name: string | null;
 }
 
 // ── dashboard analytics (f-139) ────────────────────────────────────────
@@ -160,6 +163,12 @@ export interface Match {
   company: string | null;
   location: string | null;
   url: string | null;
+  // f-139 design card enrichment (from the extended get_job)
+  workplace: string | null; // "remote" | "hybrid" | …
+  employmentType: string | null;
+  source: string | null; // ATS provider badge
+  postedAt: string | null;
+  comp: string | null; // formatted pay range, e.g. "$160k–$190k"
 }
 
 export interface ApproveMatchResult {

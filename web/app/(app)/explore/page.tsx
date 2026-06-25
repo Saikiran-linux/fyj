@@ -79,6 +79,20 @@ function MatchCard({
         </div>
       </div>
 
+      {(m.workplace || m.employmentType || m.source || m.comp || m.postedAt) && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {m.workplace && <Chip tone="neutral">{m.workplace}</Chip>}
+          {m.employmentType && <Chip tone="neutral">{m.employmentType}</Chip>}
+          {m.source && <Chip tone="neutral">{m.source}</Chip>}
+          {m.comp && <span className="text-xs font-medium text-foreground">{m.comp}</span>}
+          {m.postedAt && (
+            <span className="text-xs text-muted-foreground">
+              posted {new Date(m.postedAt).toLocaleDateString()}
+            </span>
+          )}
+        </div>
+      )}
+
       {m.rationale && <p className="mt-3 text-sm text-muted-foreground">{m.rationale}</p>}
 
       {((m.matchedSkills?.length ?? 0) > 0 || (m.missingSkills?.length ?? 0) > 0) && (

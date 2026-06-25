@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { sql } from "drizzle-orm";
 import { createDb, type DB, type Principal } from "./db/client";
 import { createAuth } from "./auth";
 import { resolvePrincipal } from "./principal";
@@ -13,9 +14,12 @@ import {
   memberRole,
 } from "./db/schema";
 import { parseResume } from "./resume";
-import { embedText, embedRaw } from "./embeddings";
-import { summarizeResume } from "./summarize";
-import { searchAndHydrate, getJob, type JobFilters } from "./index-client";
+import { embedText } from "./embeddings";
+import { searchAndHydrate, getJob, searchJobs, type JobFilters } from "./index-client";
+import { runIntake } from "./graph/intake";
+import { enrichOne } from "./graph/enrich";
+import { tailorResume } from "./graph/tailor";
+import { hasAnthropic } from "./graph/llm";
 
 type Vars = { db: DB; principal: Principal };
 
@@ -29,6 +33,122 @@ interface UploadedFile {
 const isStaff = (p: Principal): p is Extract<Principal, { principal: "staff" }> =>
   p.principal === "staff";
 
+/** Build a human pay string from the index's structured comp fields (f-139). */
+function formatComp(j: {
+  compMin: number | null;
+  compMax: number | null;
+  compCurrency: string | null;
+  compInterval: string | null;
+  compText: string | null;
+}): string | null {
+  if (j.compText) return j.compText;
+  if (j.compMin == null && j.compMax == null) return null;
+  const sym = !j.compCurrency || j.compCurrency === "USD" ? "$" : `${j.compCurrency} `;
+  const fmt = (n: number) => (n >= 1000 && n % 1000 === 0 ? `${n / 1000}k` : n.toLocaleString("en-US"));
+  const lo = j.compMin != null ? `${sym}${fmt(j.compMin)}` : null;
+  const hi = j.compMax != null ? `${sym}${fmt(j.compMax)}` : null;
+  const range = lo && hi ? `${lo}–${hi}` : (lo ?? hi);
+  const per = j.compInterval === "hour" ? "/hr" : j.compInterval === "month" ? "/mo" : "";
+  return range ? `${range}${per}` : null;
+}
+
+/**
+ * Create a Better Auth user from a username + password (used by the seed and
+ * admin "create operator" paths). Email/password is the underlying credential,
+ * so we synthesize a non-deliverable placeholder email — it's never used to log
+ * in (staff sign in by username) and is unique because the username is. Returns
+ * the new user id; throws the Better Auth error on conflict/validation.
+ */
+async function createAuthUser(
+  auth: ReturnType<typeof createAuth>,
+  input: { username: string; password: string; name?: string },
+): Promise<string> {
+  const res = await auth.api.signUpEmail({
+    body: {
+      email: `${input.username.toLowerCase()}@staff.fyj.local`,
+      password: input.password,
+      name: input.name?.trim() || input.username,
+      username: input.username,
+    },
+  });
+  return res.user.id;
+}
+
+/** Best-effort message for a failed user creation (e.g. username taken). */
+function authUserError(e: unknown): string {
+  if (e && typeof e === "object" && "body" in e) {
+    const body = (e as { body?: { message?: string; code?: string } }).body;
+    if (body?.message) return body.message;
+    if (body?.code) return body.code;
+  }
+  return e instanceof Error ? e.message : "could not create user";
+}
+
+function profileSummary(parsed: unknown): string {
+  const p = parsed as { summary?: string } | null;
+  return (p?.summary ?? "").toString();
+}
+
+/**
+ * Background (waitUntil) enrichment of a campaign's freshly surfaced matches.
+ * Runs the LangGraph enrich graph per match with bounded concurrency. Opens its
+ * OWN DB connection — the per-request Hyperdrive pool is closed once the response
+ * is flushed, so background work must not borrow it.
+ */
+async function enrichCampaignBackground(env: Env, who: Principal, campaignId: string): Promise<void> {
+  if (!hasAnthropic(env)) return; // rationale/skills need Claude; no-op until the key is set
+  const { db, close } = createDb(env.HYPERDRIVE.connectionString);
+  try {
+    const ctx = await repo.getCampaignProfile(db, who, campaignId);
+    const summary = ctx ? profileSummary(ctx.parsedProfile) || (ctx.resumeText ?? "") : "";
+    if (!summary) return;
+    const pending = await repo.listMatchesToEnrich(db, who, campaignId, 25);
+    const queue = [...pending];
+    const worker = async () => {
+      for (let m = queue.shift(); m; m = queue.shift()) {
+        try {
+          const job = await getJob(env, m.jobId, m.companyId);
+          if (!job) continue;
+          const e = await enrichOne(env, summary, job);
+          await repo.enrichMatch(db, who, m.id, e);
+        } catch (err) {
+          console.error(JSON.stringify({ at: "enrich", matchId: m.id, err: String(err) }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: 5 }, worker));
+  } catch (err) {
+    console.error(JSON.stringify({ at: "enrichCampaign", campaignId, err: String(err) }));
+  } finally {
+    await close();
+  }
+}
+
+/** Background (waitUntil) résumé tailoring for an approved match (own DB conn). */
+async function tailorMatchBackground(env: Env, who: Principal, matchId: string): Promise<void> {
+  if (!hasAnthropic(env)) return;
+  const { db, close } = createDb(env.HYPERDRIVE.connectionString);
+  try {
+    const ctx = await repo.getTailoringContext(db, who, matchId);
+    if (!ctx || !ctx.resumeText) return;
+    const job = await getJob(env, ctx.jobId, ctx.companyId);
+    if (!job) return;
+    const result = await tailorResume(env, ctx.resumeText, job, profileSummary(ctx.parsedProfile));
+    const resumeName = `${(job.title ?? "role").replace(/[^a-z0-9]+/gi, "_").slice(0, 48)}.md`;
+    await repo.saveTailoredResume(db, who, {
+      matchId,
+      clientId: ctx.clientId,
+      markdown: result.markdown,
+      model: result.model,
+      resumeName,
+    });
+  } catch (err) {
+    console.error(JSON.stringify({ at: "tailorMatch", matchId, err: String(err) }));
+  } finally {
+    await close();
+  }
+}
+
 /**
  * The ops-console HTTP API (f-133). Better Auth owns /api/auth/**; every other
  * /api route resolves a tenant Principal and goes through the repository layer
@@ -36,6 +156,26 @@ const isStaff = (p: Principal): p is Extract<Principal, { principal: "staff" }> 
  */
 export function createApi() {
   const app = new Hono<{ Bindings: Env; Variables: Vars }>();
+
+  // Surface the real cause of a failed request. Drizzle wraps DB errors as
+  // "Failed query: …" and hides the underlying Postgres message (permission /
+  // RLS / constraint) on `.cause` — log the whole chain so failures are
+  // diagnosable from `wrangler tail` instead of an opaque 500.
+  app.onError((err, c) => {
+    const cause = (err as { cause?: unknown }).cause;
+    console.error(
+      JSON.stringify({
+        at: "onError",
+        path: c.req.path,
+        method: c.req.method,
+        message: err instanceof Error ? err.message : String(err),
+        cause: cause instanceof Error ? cause.message : cause ? String(cause) : null,
+        code: (cause as { code?: string } | undefined)?.code ?? null,
+      }),
+    );
+    return c.json({ error: "internal_error" }, 500);
+  });
+
 
   app.get("/health", (c) => c.json({ ok: true, service: "fyj-ops-console" }));
 
@@ -68,15 +208,56 @@ export function createApi() {
     }
   });
 
-  // Better Auth: sign-up / sign-in / session / sign-out / …
+  // ONBOARDING: public self-sign-up is closed. Hard-block the Better Auth
+  // sign-up HTTP route (every method/sub-path) BEFORE the catch-all below — the
+  // seed + admin "create operator" paths create users via auth.api.signUpEmail
+  // directly (off this route), so this only stops anonymous self-registration.
+  app.all("/api/auth/sign-up/*", (c) => c.json({ error: "signup_disabled" }, 403));
+
+  // Better Auth: sign-in / session / sign-out / …
   app.on(["GET", "POST"], "/api/auth/*", (c) => {
     const auth = createAuth(c.env, c.get("db"), (p) => c.executionCtx.waitUntil(p));
     return auth.handler(c.req.raw);
   });
 
+  // Seed: create the first org + its admin. Unauthenticated by design (there is
+  // no admin yet); guarded by a shared secret instead. Exempt from the session
+  // middleware below, like /api/auth.
+  app.post("/api/seed/org-admin", async (c) => {
+    const secret = c.env.ADMIN_BOOTSTRAP_SECRET;
+    if (!secret || c.req.header("x-seed-secret") !== secret)
+      return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      username?: string;
+      password?: string;
+      name?: string;
+      orgName?: string;
+    };
+    const username = body.username?.trim();
+    if (!username || !body.password) return c.json({ error: "username + password required" }, 400);
+    const db = c.get("db");
+    const auth = createAuth(c.env, db, (p) => c.executionCtx.waitUntil(p));
+    let userId: string;
+    try {
+      userId = await createAuthUser(auth, {
+        username,
+        password: body.password,
+        name: body.name,
+      });
+    } catch (e) {
+      return c.json({ error: authUserError(e) }, 409);
+    }
+    // SECURITY DEFINER: creates organization + admin membership atomically.
+    const rows = (await db.execute(
+      sql`select app.bootstrap_org_for_user(${userId}, ${body.orgName ?? `${username}'s org`}) as org_id`,
+    )) as unknown as Array<{ org_id: string }>;
+    return c.json({ userId, orgId: rows[0]?.org_id ?? null, username }, 201);
+  });
+
   // Authn + tenant resolution for the rest of /api.
   app.use("/api/*", async (c, next) => {
     if (c.req.path.startsWith("/api/auth/")) return next();
+    if (c.req.path.startsWith("/api/seed/")) return next();
     const auth = createAuth(c.env, c.get("db"), (p) => c.executionCtx.waitUntil(p));
     const session = await auth.api.getSession({ headers: c.req.raw.headers });
     if (!session?.user) return c.json({ error: "unauthenticated" }, 401);
@@ -111,15 +292,22 @@ export function createApi() {
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
   });
 
-  // Update a candidate (status / headline / consent) — f-139 P3.
+  // Update a candidate — core details (name/email/phone/headline/notes) plus
+  // status / consent (f-139 P3, extended f-144 for the edit-profile modal).
   app.patch("/api/clients/:id", async (c) => {
     const p = c.get("principal");
     if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
     const body = (await c.req.json().catch(() => ({}))) as {
+      fullName?: string;
+      email?: string | null;
+      phone?: string | null;
       status?: string;
       headline?: string | null;
       consentStatus?: string;
+      notes?: string | null;
     };
+    if (body.fullName !== undefined && !body.fullName.trim())
+      return c.json({ error: "fullName cannot be empty" }, 400);
     if (body.status !== undefined && !clientStatus.enumValues.includes(body.status as repo.ClientStatus))
       return c.json({ error: "invalid status" }, 400);
     if (
@@ -128,11 +316,39 @@ export function createApi() {
     )
       return c.json({ error: "invalid consentStatus" }, 400);
     const row = await repo.updateClient(c.get("db"), p, c.req.param("id"), {
+      fullName: body.fullName?.trim(),
+      email: body.email,
+      phone: body.phone,
       status: body.status as repo.ClientStatus | undefined,
       headline: body.headline,
       consentStatus: body.consentStatus as repo.ConsentStatus | undefined,
+      notes: body.notes,
     });
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  // Permanently delete a candidate (admin only — matches the clients_delete RLS
+  // policy). The DB cascade removes profiles/campaigns/matches/reports/placements/
+  // feedback; we additionally purge the candidate's résumé objects from R2 since
+  // object storage isn't reached by the FK cascade.
+  app.delete("/api/clients/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    if (p.role !== "admin") return c.json({ error: "admin_only" }, 403);
+    const clientId = c.req.param("id");
+    const result = await repo.deleteClient(c.get("db"), p, clientId);
+    if (!result) return c.json({ error: "not_found" }, 404);
+    // Best-effort R2 purge — the DB row is already gone, so a storage hiccup must
+    // not fail the request (it would only leave orphan objects, logged below).
+    try {
+      const prefix = `resumes/${p.orgId}/${clientId}/`;
+      const listed = await c.env.RESUMES.list({ prefix });
+      const keys = listed.objects.map((o) => o.key);
+      if (keys.length) await c.env.RESUMES.delete(keys);
+    } catch (err) {
+      console.error(JSON.stringify({ at: "deleteClient.r2", clientId, err: String(err) }));
+    }
+    return c.json({ ok: true, id: clientId });
   });
 
   // Applications (placements) for one candidate — f-139 P3.
@@ -210,26 +426,65 @@ export function createApi() {
       httpMetadata: { contentType: file.type || "application/octet-stream" },
     });
 
-    // Match how the index embeds JOBS: summarize the resume into the same
-    // JD-style 14-field precis + title/signal prelude (src/summarize.ts mirrors
-    // fyj_scanner's summarize.mjs + buildJobText), then embed that VERBATIM so
-    // the resume lands in the job vector distribution. Embedding raw prose would
-    // rank worse — jobs.embedding comes from the summary, not the description.
-    const summary = await summarizeResume(c.env, parsed.text);
-    const { embedding, model } = await embedRaw(c.env, summary.embedInput);
+    // Intake graph (LangGraph): extract structured candidate fields (gpt-4o-mini),
+    // summarize + embed into the index's vector space (reuses f-134), and search
+    // the index for the top matches — all in one graph run.
+    const intake = await runIntake(c.env, parsed.text);
+    if (!intake.embedding) return c.json({ error: "could not embed resume" }, 422);
+
     const row = await repo.attachResume(c.get("db"), p, profileId, {
       resumeStoragePath: storagePath,
       resumeText: parsed.text,
       parsedProfile: {
         ...parsed.profile,
         kind: parsed.kind,
-        title: summary.title,
-        summary: summary.summary,
+        candidate: intake.candidate,
+        summary: intake.embedInput, // JD-style precis — reused by enrichment/tailoring
       },
-      embedding,
-      embeddingModel: model,
+      embedding: intake.embedding,
+      embeddingModel: intake.embeddingModel ?? "text-embedding-3-small",
     });
-    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+    if (!row) return c.json({ error: "not_found" }, 404);
+
+    // Auto-populate the candidate + targeting criteria, then activate the
+    // campaign and surface the matches the graph found.
+    if (intake.candidate)
+      await repo.applyResumeExtraction(c.get("db"), p, clientId, profileId, intake.candidate);
+    const campaignId = await repo.ensureCampaign(c.get("db"), p, profileId, true);
+    if (campaignId && intake.matches.length)
+      await repo.recordRun(c.get("db"), p, campaignId, intake.matches);
+    if (campaignId)
+      c.executionCtx.waitUntil(enrichCampaignBackground(c.env, p, campaignId));
+
+    return c.json({ profile: row, surfaced: intake.matches.length });
+  });
+
+  // On-demand "Find matches" for a profile/campaign — surfaces the top ~25 into
+  // campaign_matches now (dedup in DB) and enriches them in the background.
+  app.post("/api/profiles/:id/match", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const profile = await repo.getProfile(c.get("db"), p, c.req.param("id"));
+    if (!profile) return c.json({ error: "not_found" }, 404);
+    if (!profile.embedding) return c.json({ error: "profile_not_embedded" }, 409);
+
+    const campaignId = await repo.ensureCampaign(c.get("db"), p, profile.id, true);
+    if (!campaignId) return c.json({ error: "no_campaign" }, 409);
+    // Drop `families` defensively — the index's family vocab doesn't match our
+    // values and zeroes results (also guards profiles embedded before this fix).
+    const { families: _drop, ...tf } = (profile.targetFilters as JobFilters) ?? {};
+    const hits = await searchJobs(c.env, profile.embedding as number[], {
+      ...tf,
+      targetOnly: tf.targetOnly ?? true,
+    });
+    const matches = hits
+      .slice(0, 25)
+      .map((m, i) => ({ jobId: m.jobId, companyId: m.companyId, score: m.score, rank: i + 1 }));
+    if (matches.length) await repo.recordRun(c.get("db"), p, campaignId, matches);
+    c.executionCtx.waitUntil(enrichCampaignBackground(c.env, p, campaignId));
+
+    const surfaced = await repo.listMatches(c.get("db"), p, { candidateId: profile.clientId });
+    return c.json({ surfaced: matches.length, matches: surfaced });
   });
 
   // ── index search (f-134) ─────────────────────────────────────────────
@@ -300,6 +555,11 @@ export function createApi() {
           company: job?.company ?? null,
           location: job?.location ?? null,
           url: job?.url ?? null,
+          workplace: job?.workplace ?? null,
+          employmentType: job?.employmentType ?? null,
+          source: job?.source ?? null,
+          postedAt: job?.postedAt ?? null,
+          comp: job ? formatComp(job) : null,
         };
       }),
     );
@@ -310,8 +570,31 @@ export function createApi() {
   app.post("/api/matches/:id/approve", async (c) => {
     const p = c.get("principal");
     if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
-    const result = await repo.approveMatch(c.get("db"), p, c.req.param("id"));
-    return result ? c.json(result) : c.json({ error: "not_found" }, 404);
+    const matchId = c.req.param("id");
+    const result = await repo.approveMatch(c.get("db"), p, matchId);
+    if (!result) return c.json({ error: "not_found" }, 404);
+    // Tailor the master résumé to this job in the background (LangGraph tailor
+    // graph: draft → critique → revise). The editable Markdown lands on the match.
+    c.executionCtx.waitUntil(tailorMatchBackground(c.env, p, matchId));
+    return c.json({ ...result, tailoring: hasAnthropic(c.env) });
+  });
+
+  // Tailored résumé (Markdown) for an approved match — read + operator edits.
+  app.get("/api/matches/:id/resume", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const row = await repo.getTailoredResume(c.get("db"), p, c.req.param("id"));
+    if (!row) return c.json({ status: "pending", markdown: null });
+    return c.json({ status: "ready", markdown: row.markdown, model: row.model, generatedAt: row.generatedAt });
+  });
+
+  app.put("/api/matches/:id/resume", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as { markdown?: string };
+    if (typeof body.markdown !== "string") return c.json({ error: "markdown required" }, 400);
+    const row = await repo.updateTailoredResume(c.get("db"), p, c.req.param("id"), body.markdown);
+    return row ? c.json({ ok: true }) : c.json({ error: "not_found" }, 404);
   });
 
   // ── dashboard analytics (f-139) ──────────────────────────────────────
@@ -373,14 +656,34 @@ export function createApi() {
     return c.json(await repo.listMembers(c.get("db"), p));
   });
 
+  // Admin creates a staff account (operator/admin/viewer) with username +
+  // password. We create the Better Auth user directly (off the blocked sign-up
+  // route, so no session cookie is minted for the admin), then add the active
+  // membership in the admin's org. Username is globally unique (Better Auth),
+  // which also makes the synthesized placeholder email unique.
   app.post("/api/members", async (c) => {
     const p = c.get("principal");
     if (!isStaff(p) || p.role !== "admin") return c.json({ error: "forbidden" }, 403);
-    const body = (await c.req.json().catch(() => ({}))) as { userId?: string; role?: string };
+    const body = (await c.req.json().catch(() => ({}))) as {
+      username?: string;
+      password?: string;
+      name?: string;
+      role?: string;
+    };
+    const username = body.username?.trim();
     const role = body.role as repo.MemberRole | undefined;
-    if (!body.userId || !role || !memberRole.enumValues.includes(role))
-      return c.json({ error: "userId + valid role required" }, 400);
-    const row = await repo.inviteMember(c.get("db"), p, body.userId, role);
+    if (!username || !body.password || !role || !memberRole.enumValues.includes(role))
+      return c.json({ error: "username + password + valid role required" }, 400);
+
+    const db = c.get("db");
+    const auth = createAuth(c.env, db, (pr) => c.executionCtx.waitUntil(pr));
+    let userId: string;
+    try {
+      userId = await createAuthUser(auth, { username, password: body.password, name: body.name });
+    } catch (e) {
+      return c.json({ error: authUserError(e) }, 409);
+    }
+    const row = await repo.addStaffMembership(db, p, userId, role);
     return c.json(row, 201);
   });
 

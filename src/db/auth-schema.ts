@@ -18,6 +18,12 @@ export const user = pgTable("user", {
   email: text("email").notNull().unique(),
   emailVerified: boolean("email_verified").notNull().default(false),
   image: text("image"),
+  // Better Auth `username` plugin: staff sign in with `username`; the DB column
+  // is case-insensitive-unique via the plugin. `displayUsername` preserves the
+  // original casing for display. Nullable so legacy/portal users without one
+  // (and the adapter's create flow) are valid.
+  username: text("username").unique(),
+  displayUsername: text("display_username"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

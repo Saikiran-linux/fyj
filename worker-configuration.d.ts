@@ -8,6 +8,9 @@ interface Env {
   MATCH_QUEUE: Queue<MatchJob>;
   BETTER_AUTH_SECRET: string;
   BETTER_AUTH_URL: string;
+  // Shared secret guarding POST /api/seed/org-admin (creates the first org +
+  // admin). Set via `wrangler secret put ADMIN_BOOTSTRAP_SECRET`.
+  ADMIN_BOOTSTRAP_SECRET: string;
   WEB_ORIGIN: string;
   OPENAI_API_KEY: string;
   ANTHROPIC_API_KEY: string;
