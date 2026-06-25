@@ -96,6 +96,9 @@ export const api = {
     id: string,
     input: { status?: ClientStatus; headline?: string | null; consentStatus?: ConsentStatus },
   ) => req<Client>(`/api/clients/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  // Permanently delete a candidate + all its campaigns/matches/placements (admin only).
+  deleteClient: (id: string) =>
+    req<{ ok: true; id: string }>(`/api/clients/${id}`, { method: "DELETE" }),
   listClientApplications: (clientId: string) =>
     req<ApplicationRow[]>(`/api/clients/${clientId}/applications`),
 

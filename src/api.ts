@@ -297,6 +297,30 @@ export function createApi() {
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
   });
 
+  // Permanently delete a candidate (admin only — matches the clients_delete RLS
+  // policy). The DB cascade removes profiles/campaigns/matches/reports/placements/
+  // feedback; we additionally purge the candidate's résumé objects from R2 since
+  // object storage isn't reached by the FK cascade.
+  app.delete("/api/clients/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    if (p.role !== "admin") return c.json({ error: "admin_only" }, 403);
+    const clientId = c.req.param("id");
+    const result = await repo.deleteClient(c.get("db"), p, clientId);
+    if (!result) return c.json({ error: "not_found" }, 404);
+    // Best-effort R2 purge — the DB row is already gone, so a storage hiccup must
+    // not fail the request (it would only leave orphan objects, logged below).
+    try {
+      const prefix = `resumes/${p.orgId}/${clientId}/`;
+      const listed = await c.env.RESUMES.list({ prefix });
+      const keys = listed.objects.map((o) => o.key);
+      if (keys.length) await c.env.RESUMES.delete(keys);
+    } catch (err) {
+      console.error(JSON.stringify({ at: "deleteClient.r2", clientId, err: String(err) }));
+    }
+    return c.json({ ok: true, id: clientId });
+  });
+
   // Applications (placements) for one candidate — f-139 P3.
   app.get("/api/clients/:id/applications", async (c) => {
     const p = c.get("principal");

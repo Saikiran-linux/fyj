@@ -871,6 +871,34 @@ export function updateClient(db: DB, who: Principal, clientId: string, input: Up
   });
 }
 
+// Permanently delete a candidate and everything hanging off it. The client_id
+// FKs on client_profiles / campaigns / campaign_matches / reports / placements /
+// feedback are all ON DELETE CASCADE, so one delete removes the whole subtree;
+// audit_log has no client FK so the trail (incl. this row) survives. RLS
+// (clients_delete) only permits admins — an operator's delete affects zero rows.
+// We pre-read the row WITHOUT relying on DELETE…RETURNING (the clients SELECT
+// policy re-queries the row mid-command, same gotcha createClient documents),
+// and hand back the résumé R2 keys so the caller can purge object storage (no
+// cascade reaches R2).
+export function deleteClient(db: DB, who: Principal, clientId: string) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .select({ id: clients.id, fullName: clients.fullName })
+      .from(clients)
+      .where(eq(clients.id, clientId))
+      .limit(1);
+    if (!row) return null;
+    const profs = await tx
+      .select({ path: clientProfiles.resumeStoragePath })
+      .from(clientProfiles)
+      .where(eq(clientProfiles.clientId, clientId));
+    await tx.delete(clients).where(eq(clients.id, clientId));
+    await audit(tx, who, "client.delete", "client", clientId, { fullName: row.fullName });
+    const resumeKeys = profs.map((p) => p.path).filter((p): p is string => Boolean(p));
+    return { id: clientId, fullName: row.fullName, resumeKeys };
+  });
+}
+
 export interface UpdateProfileInput {
   autopilot?: boolean;
   targetFilters?: Record<string, unknown>;

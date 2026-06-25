@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Topbar } from "@/components/topbar";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,7 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { api } from "@/lib/api";
-import type { Client, ClientProfile, Match, ApplicationRow, ConsentStatus } from "@/lib/types";
+import type { Client, ClientProfile, Match, ApplicationRow, ConsentStatus, StaffRole } from "@/lib/types";
 
 function consentTone(consent: ConsentStatus) {
   return consent === "active" ? "success" : consent === "pending" ? "warning" : "danger";
@@ -35,6 +35,9 @@ function fmtDate(iso: string) {
 
 export default function CandidateProfilePage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+  const [role, setRole] = useState<StaffRole | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [client, setClient] = useState<Client | null>(null);
   const [profiles, setProfiles] = useState<ClientProfile[] | null>(null);
   const [matches, setMatches] = useState<Match[] | null>(null);
@@ -74,8 +77,29 @@ export default function CandidateProfilePage() {
     loadProfiles().catch(() => {});
     api.listMatches({ candidateId: id }).then(setMatches).catch(() => {});
     api.listClientApplications(id).then(setApps).catch(() => {});
+    api
+      .me()
+      .then((r) => setRole(r.principal.principal === "staff" ? r.principal.role : null))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  async function removeClient() {
+    if (!client) return;
+    const ok = window.confirm(
+      `Permanently delete "${client.fullName}"?\n\nThis removes the candidate and ALL of their campaigns, matches, placements, and résumés. This cannot be undone.`,
+    );
+    if (!ok) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await api.deleteClient(id);
+      router.push("/clients");
+    } catch (e) {
+      setError((e as Error).message);
+      setDeleting(false);
+    }
+  }
 
   async function toggleStatus() {
     if (!client) return;
@@ -166,6 +190,16 @@ export default function CandidateProfilePage() {
             <Button onClick={() => void findMatches()} disabled={matching}>
               {matching ? "Finding…" : "Find matches"}
             </Button>
+            {role === "admin" && (
+              <Button
+                variant="outline"
+                disabled={deleting}
+                onClick={() => void removeClient()}
+                className="border-destructive/40 text-destructive hover:bg-destructive/10"
+              >
+                {deleting ? "Deleting…" : "Delete"}
+              </Button>
+            )}
           </div>
         </div>
 
