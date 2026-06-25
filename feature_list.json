@@ -21,7 +21,10 @@
       "id": "f-133",
       "name": "Auth + repository + tenant API + UI shell",
       "description": "Better Auth (Drizzle adapter, per-request over Hyperdrive; app-owned orgs via SECURITY DEFINER signup bootstrap); resolvePrincipal() via SECURITY DEFINER resolvers; mandatory org-scoped repository (every call -> withTenant -> RLS); Hono tenant API; Next.js web/ UI shell (Clay-inspired) with Dashboard/Clients/Client detail/Campaign matches/Members.",
-      "dependencies": ["f-131", "f-132"],
+      "dependencies": [
+        "f-131",
+        "f-132"
+      ],
       "status": "done",
       "evidence": "DEPLOYED + verified live 2026-06-18. Backend merged (PR #1), UI + harness + CORS merged (PR #3 -> main 4d7e0bf). LIVE: UI https://fyj-console.vercel.app (Vercel, git-auto-deploy from main, root dir web), API https://fyj-ops-console.saikiran13055.workers.dev (Cloudflare Worker). Signup verified end-to-end from the real origin: CORS 204 preflight, 200 signup, cross-site cookie (SameSite=None;Secure;Partitioned), and org + admin membership auto-created by app.bootstrap_org_for_user. ops_app non-BYPASSRLS, RLS fails closed. Added cross-origin support: hono/cors + Better Auth trustedOrigins + defaultCookieAttributes keyed off WEB_ORIGIN (src/api.ts, src/auth.ts)."
     },
@@ -29,7 +32,9 @@
       "id": "f-infra",
       "name": "Provision runtime infra + secrets",
       "description": "Neon project (+ vector/pgcrypto), apply schema + db/policies.sql (+ ops_app/ops_system roles), Hyperdrive/R2/KV/Queue + wrangler secrets, deploy Worker, point the Vercel app at it. See docs/INFRA-SETUP.md for the live resource names/ids and operational notes.",
-      "dependencies": ["f-131"],
+      "dependencies": [
+        "f-131"
+      ],
       "status": "done",
       "evidence": "DONE 2026-06-18. Neon store 'neon-bisque-yacht' (project tiny-silence-25740582, db neondb): 14 tables, 22 RLS policies, 10 app.* fns, ops_app/ops_system roles (ops_app non-BYPASSRLS). Schema applied over Neon's HTTPS serverless driver (raw 5432 egress is blocked in CI). Cloudflare (acct 489409dba6e11499199acff6ffb8eddf): Hyperdrive 78ccefa7a3284ceebccc7fa1ceac1379, KV b6f1e38fdce3455783d0038eb62dac26, Queue fyj-match, R2 fyj-resumes; secrets BETTER_AUTH_SECRET + FYJ_INDEX_KEY set. Worker deployed. CAVEAT: ops_system is NOT BYPASSRLS (Neon owner can't grant it via SQL) — the f-135 matcher needs that resolved. SECURITY: the Neon/Cloudflare/Vercel tokens + Supabase key shared in chat must be rotated."
     },
@@ -37,7 +42,10 @@
       "id": "f-134",
       "name": "Clients/profiles + resume -> R2 -> embed",
       "description": "Assignment-scoped client CRUD (have list/create); resume upload to R2 (RESUMES bucket fyj-resumes is live); a Worker parses PDF/DOCX -> text -> embedding -> client_profiles.embedding + parsed_profile. Lights up the Jobs screen + dashboard command bar (which call search_jobs against a profile embedding). NEEDS OPENAI_API_KEY secret on the Worker (wrangler secret put). This is the ACTIVE next feature now that infra is live.",
-      "dependencies": ["f-133", "f-infra"],
+      "dependencies": [
+        "f-133",
+        "f-infra"
+      ],
       "status": "done",
       "evidence": "Implemented on branch claude/bold-cori-miypka. Backend: src/embeddings.ts (OpenAI text-embedding-3-small, 1536d, embedRaw embeds VERBATIM/newlines-preserved like jobs; embedText only for short queries), src/summarize.ts (resume → JD-style 14-field precis via gpt-4o-mini temp 0 — IDENTICAL schema/order to fyj_scanner summarize.mjs — then title+signal-block prelude like buildJobText, so the resume lands in the JOB vector distribution; mirrors scripts/embed-resume.mjs), src/resume.ts (PDF via unpdf, DOCX via fflate→document.xml, plain text; + heuristic parsedProfile), repo.getProfile/attachResume (RLS via withTenant; audits profile.embed). Routes: POST /api/clients/:id/profiles/:profileId/resume (multipart → R2 fyj-resumes → parse → embed → client_profiles.embedding+parsedProfile+embeddedAt), GET /api/profiles/:id/jobs and POST /api/search (searchAndHydrate = search_jobs + KV-cached get_job). UI: client-detail resume upload + 'View jobs' per embedded profile; real /jobs page (profile matches + ad-hoc text search, score chips); command bar wired. GATES GREEN: Worker `npm run typecheck`, `wrangler deploy --dry-run` (964 KiB gzip, unpdf/fflate bundle clean), web `npm run typecheck` + `next build` (11 routes). DEPLOY STEP REMAINING (operational, needs creds): `wrangler secret put OPENAI_API_KEY` on the Worker, then `npm run deploy`. NOT runtime-verified in-repo (no creds to deploy this session); embedText throws a clear error if the key is unset. DEPLOYED LIVE 2026-06-20: OPENAI_API_KEY set on fyj-ops-console (wrangler secret put); key independently verified (text-embedding-3-small → 1536d); Worker deployed (version ce041109). client_profiles.embedding/parsed_profile/embedded_at confirmed present in prod Neon."
     },
@@ -45,7 +53,9 @@
       "id": "f-135",
       "name": "Continuous campaign matcher (live)",
       "description": "Wire the existing matcher.ts: Cloudflare Cron enqueues active campaigns -> Queue consumer calls search_jobs (first_seen_at > last_run_at) over HTTPS -> upserts campaign_matches in Neon. Feeds the curation UI.",
-      "dependencies": ["f-134"],
+      "dependencies": [
+        "f-134"
+      ],
       "status": "done",
       "evidence": "Implemented on branch claude/bold-cori-miypka. Resolved the ops_system-not-BYPASSRLS blocker via SECURITY DEFINER (chosen by user over pursuing BYPASSRLS): db/policies.sql adds app.list_active_campaigns(), app.get_campaign_for_match(uuid) (returns embedding::text — pgvector has no raw-RPC driver mapping), app.record_campaign_run(uuid, jsonb) (inserts campaign_matches on conflict (campaign_id,job_id) do nothing + bumps last_run_at atomically; org_id/client_id derived from the campaign, never the payload). All owner-owned/RLS-exempt (file already forbids FORCE RLS for exactly this), granted to ops_app+ops_system. src/matcher.ts rewritten to call these over the existing ops_app Hyperdrive connection (no second binding / no BYPASSRLS role); cron enqueues active campaigns, queue consumer matches each incrementally (since=last_run_at, targetOnly default true). GATES GREEN: ./init.sh (Worker typecheck + db:generate unchanged + web typecheck), wrangler dry-run bundles. NOT runtime-verified (no Neon/CF creds this session): db/policies.sql must be re-applied to Neon for the new app.* fns, and the Worker redeployed, before the cron actually surfaces matches. DEPLOYED LIVE 2026-06-20: db/policies.sql applied to prod Neon via the Neon serverless WS driver (5432 is blocked in the ops container; HTTPS only) — all 3 app.* fns now exist with prosecdef=true and execute granted to ops_app+ops_system; Worker redeployed (version ce041109, cron 17 * * * * armed). Runtime-verified: non-BYPASSRLS ops_app role successfully executes app.list_active_campaigns() (0 active campaigns yet). Cron is a no-op until a campaign is activated and its profile embedded."
     },
@@ -53,7 +63,9 @@
       "id": "f-136",
       "name": "Deep eval (A-G) + CV tailor + tracker",
       "description": "On-demand Sonnet/Opus A-G report (prompt-cached) writing reports; multi-agent CV-tailor -> PDF; placements kanban (Tracker screen).",
-      "dependencies": ["f-135"],
+      "dependencies": [
+        "f-135"
+      ],
       "status": "not-started",
       "evidence": ""
     },
@@ -61,7 +73,9 @@
       "id": "f-137",
       "name": "Client portal + feedback loop",
       "description": "Read-only client portal (own pipeline) + feedback insert-only (RLS already enforces both principals); feedback signal tunes target_filters.",
-      "dependencies": ["f-135"],
+      "dependencies": [
+        "f-135"
+      ],
       "status": "not-started",
       "evidence": ""
     },
@@ -69,7 +83,10 @@
       "id": "f-138",
       "name": "Billing + daily digests",
       "description": "Usage/billing + Resend daily digest at the operator/client configured time.",
-      "dependencies": ["f-136", "f-137"],
+      "dependencies": [
+        "f-136",
+        "f-137"
+      ],
       "status": "not-started",
       "evidence": ""
     },
@@ -77,9 +94,23 @@
       "id": "f-139",
       "name": "Operator console — design-parity rebuild (dashboard + top navbar)",
       "description": "Rebuild the operator console to match the Claude Design mockup (dashboard/Operator Dashboard.html) in the PRESENT look (square corners, grayscale, Source Sans, shadcn) — adopting the design's top navbar but not its warm/mono/rounded chrome. Whole console across 4 phases: P1 dashboard analytics + navbar; P2 Explore (match review) + campaign_matches enrichment; P3 Candidates roster + Candidate profile; P4 Calendar. Backed by real data — net-new analytics here; later phases advance f-136 (tracker) / f-137 (feedback).",
-      "dependencies": ["f-133", "f-135"],
+      "dependencies": [
+        "f-133",
+        "f-135"
+      ],
       "status": "done",
       "evidence": "PHASE 1 done + verified in working tree (branch claude/bold-cori-fohjtb). Backend (no schema change — trends computed live from placements/campaign_matches timestamps, so no migration): db/policies.sql adds org-scoped SECURITY DEFINER analytics app.org_kpis()/org_funnel()/operator_stats()/org_trends()/org_activity(int) (read the app.org_id GUC, staff-gated, granted to ops_app — same RLS-exempt pattern as the f-135 matcher fns); src/db/repo.ts adds dashboardKpis/Funnel/Leaderboard/Trends/Activity + listApplications (all withTenant); src/api.ts adds GET /api/dashboard/{kpis,funnel,leaderboard,trends,activity} + /api/applications (isStaff guard). Frontend (present look): web/components/navbar.tsx (top navbar: brand + Dashboard/Explore/Candidates/Calendar + profile menu) replaces the icon rail in app/(app)/layout.tsx; components/topbar.tsx slimmed to a title strip (identity moved to navbar); web/components/dashboard.tsx (KpiCard/ThroughputCard/FunnelCard/ActivityCard/LeaderboardCard/ApplicationsTable + square-SVG MiniBars/Sparkline) composed into app/(app)/page.tsx; /explore + /calendar stub pages so nav resolves. GATES GREEN: ./init.sh (Worker tsc + db:generate no-drift + web tsc) and cd web && npm run build (13 routes). NOT runtime-verified (no infra this session); db/policies.sql must be re-applied to Neon for the new app.* fns before the endpoints return data. Widgets read real tables and render graceful empty states until placements/matches exist. PHASE 2 done + verified: campaign_matches enriched (migration drizzle/0001_fair_red_hulk.sql adds fit_score, confidence (enum match_confidence), rationale, matched_skills/missing_skills/guardrails text[]); app.record_campaign_run now derives fit_score = round(clamp(score,0,1)*100) + confidence banded (>=0.82 high, >=0.64 medium, else low) at surface time (rationale/skills left null until the LLM eval pass). src/db/repo.ts: listMatches (cross-campaign, RLS-scoped via clients join, candidate/confidence filters, fit desc nulls last) + approveMatch (sets action=shortlisted, queues a placement idempotent on client+job, audits match.approve). src/api.ts: GET /api/matches (hydrates job title/company/location/url via get_job/KV) + POST /api/matches/:id/approve; decline reuses POST /api/matches/:id/action {dismissed}. web/lib/{types,api}.ts: Match/MatchConfidence/ApproveMatchResult + listMatches/approveMatch/declineMatch. web/app/(app)/explore/page.tsx replaces the stub: confidence filter + match cards (fit/confidence chips, rationale, matched/gaps skills, guardrail block disables Approve) + right detail drawer with Approve & queue / Decline. GATES GREEN: ./init.sh (Worker tsc + db:generate no-drift + web tsc) and cd web && npm run build (13 routes, /explore 4.71kB). NOT runtime-verified; before live, apply migration 0001 + re-apply db/policies.sql to Neon (the updated app.record_campaign_run). PHASE 3 done + verified + APPLIED TO PROD: migration drizzle/0002_easy_praxagora.sql (consent_status enum; placement_status += drafted/ready_to_send/responded; clients += headline + consent_status; client_profiles += autopilot; placements += job_title/company_name/tailored_resume_name/stage_changed_at). repo: updateClient (status/headline/consent), updateProfile (autopilot/criteria), listApplications now accepts {clientId} + returns job_title/company_name, approveMatch creates the placement at status=ready_to_send + stage_changed_at. api: PATCH /api/clients/:id, GET /api/clients/:id/applications, PATCH /api/profiles/:id. web: clients/page.tsx -> candidate roster (cards: avatar, headline, status + consent chips, Add candidate); clients/[id]/page.tsx -> tabbed profile (hero + pause/resume + 3-stat row + Overview/Matches/Tracks/Applications/Activity tabs; Matches Approve/Decline; Tracks autopilot toggle + resume upload). web types/api: Client += headline/consentStatus, ClientProfile += autopilot, ApplicationRow += jobTitle/companyName; updateClient/updateProfile/listClientApplications. GATES GREEN: ./init.sh + web next build (13 routes; /clients 2.97kB, /clients/[id] 9.62kB). PROD APPLY (this session): migrations 0001+0002 + db/policies.sql applied to Neon via the @neondatabase/serverless WS driver (raw 5432 blocked here) — verified the 6 app.* fns exist, ops_app has execute, and all new columns + enum values are present; policies.sql compiling against the live schema validates the SQL functions. STILL NEEDS for the live URL: wrangler deploy (new Worker routes) + merge to main (Vercel auto-deploys web). SECURITY: neondb_owner password was shared in chat this session — ROTATE. PHASE 4 done + verified (no schema/migration — events derived from placements): repo.listCalendarEvents (maps a placement's stage to an interview/offer/call/sync event dated by stage_changed_at ?? applied_at ?? updated_at, RLS-scoped to the book) + GET /api/calendar?year=&month=. web/app/(app)/calendar/page.tsx replaces the stub: Month grid (Mon-start, today highlight, per-day event chips, day-detail panel) + Agenda list + prev/next/Today nav; types/api gain CalendarEvent + listCalendar. GATES GREEN: ./init.sh + web next build (13 routes; /calendar 3.94kB). f-139 COMPLETE — all 4 phases (Dashboard+navbar, Explore+match-enrichment, Candidates roster+profile, Calendar) on branch claude/bold-cori-fohjtb / PR #10; DB applied to prod Neon. TO GO LIVE ON THE URL: wrangler deploy (new Worker routes) + merge to main (Vercel redeploys web/)."
+    },
+    {
+      "id": "f-140",
+      "name": "Onboarding MVP — admin-created accounts (username/password) + client profile to design",
+      "description": "Close public self-sign-up; admin creates the org (seed) and creates operator logins (username+password); operators add clients, onboard client profiles, and accept/decline matched jobs. Client profile screen brought to the attached operator-dashboard design.",
+      "dependencies": [
+        "f-133",
+        "f-139"
+      ],
+      "status": "done",
+      "evidence": "Auth: Better Auth username plugin (src/auth.ts plugins:[username()]; web/lib/auth-client.ts usernameClient()); migration drizzle/0003_curious_triton.sql adds user.username UNIQUE + display_username. Public sign-up CLOSED: removed the user.create.after org-bootstrap hook; src/api.ts hard-blocks /api/auth/sign-up/* -> 403. Admin-creates-operator: POST /api/members {username,password,name?,role} (admin-gated) creates the auth user via auth.api.signUpEmail directly (off the blocked route, no admin cookie minted; synthesizes a unique non-deliverable placeholder email) then repo.addStaffMembership inserts an ACTIVE membership in the caller org (admin-write RLS authorizes; idempotent on org+user). repo.listMembers left-joins user for username/name. Seed: POST /api/seed/org-admin guarded by env ADMIN_BOOTSTRAP_SECRET creates org+admin via app.bootstrap_org_for_user (exempt from session middleware like /api/auth). Env wired in worker-configuration.d.ts + .dev.vars.example + wrangler.jsonc. Web: sign-in page -> username/password only (sign-up toggle removed); members page -> Create operator form + usernames in table; web/lib/{api,types}.ts add createMember + Membership.username/name. Client profile to design (decoded from the standalone HTML gzip+base64 bundle): clients/[id]/page.tsx gains cover-band hero + overlapping 96px avatar, meta row, aggregated skill tags, 5-stat row (matches/in-flight/response%/interviews/offers), and expandable MatchRow (confidence+fit chips, guardrails, rationale, matched/gap skills) with Decline + Approve-and-queue-resume wired to existing approveMatch/declineMatch. GATES GREEN: Worker tsc + web tsc + web next build (13 routes; clients/[id] 5.37kB, members 3.84kB, sign-in 4.45kB) + db:generate no-drift. NOT runtime-verified (no infra this session): before live, apply migration 0003 to Neon, set ADMIN_BOOTSTRAP_SECRET, wrangler deploy, then seed the first org+admin (docs/INFRA-SETUP.md)."
     }
   ]
 }

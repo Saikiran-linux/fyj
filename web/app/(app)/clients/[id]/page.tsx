@@ -78,6 +78,16 @@ export default function CandidateProfilePage() {
   }
 
   const activeApps = (apps ?? []).filter((a) => !["rejected", "placed"].includes(a.status));
+  const interviews = (apps ?? []).filter((a) => a.status === "interview").length;
+  const offers = (apps ?? []).filter((a) => a.status === "offer").length;
+  const respondedStages = ["responded", "interview", "offer", "placed"];
+  const appliedCount = (apps ?? []).length;
+  const respondedCount = (apps ?? []).filter((a) => respondedStages.includes(a.status)).length;
+  const responseRate = appliedCount ? Math.round((respondedCount / appliedCount) * 100) : 0;
+  const location = (matches ?? []).find((m) => m.location)?.location ?? null;
+  const skills = Array.from(
+    new Set((matches ?? []).flatMap((m) => m.matchedSkills ?? [])),
+  ).slice(0, 10);
   const activity = [
     ...(apps ?? []).map((a) => ({
       ts: a.updatedAt,
@@ -97,33 +107,68 @@ export default function CandidateProfilePage() {
       <div className="mx-auto max-w-5xl px-8 pb-16">
         {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
 
-        {/* hero */}
-        <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <Avatar name={client?.fullName ?? "?"} size={48} />
-            <div>
-              <h1 className="font-heading text-2xl font-bold tracking-tight text-foreground">
-                {client?.fullName ?? "Candidate"}
-              </h1>
-              <p className="text-sm text-muted-foreground">{client?.headline ?? client?.email ?? "—"}</p>
-              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        {/* hero: cover band + overlapping avatar */}
+        <div className="mb-4 h-28 bg-gradient-to-r from-primary/80 to-primary/40" />
+        <div className="-mt-14 mb-6 flex flex-wrap items-end justify-between gap-4 px-1">
+          <div className="flex items-end gap-4">
+            <div className="rounded-full border-4 border-card bg-card">
+              <Avatar name={client?.fullName ?? "?"} size={96} />
+            </div>
+            <div className="pb-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="font-heading text-2xl font-bold tracking-tight text-foreground">
+                  {client?.fullName ?? "Candidate"}
+                </h1>
                 {client && <Chip tone={statusTone(client.status)}>{client.status}</Chip>}
-                {client && <Chip tone={consentTone(client.consentStatus)}>consent: {client.consentStatus}</Chip>}
+                {client && (
+                  <Chip tone={consentTone(client.consentStatus)}>consent: {client.consentStatus}</Chip>
+                )}
               </div>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {client?.headline ?? client?.email ?? "—"}
+              </p>
             </div>
           </div>
-          {client && (
-            <Button variant="outline" disabled={busy} onClick={toggleStatus}>
-              {client.status === "paused" ? "Resume" : "Pause"}
-            </Button>
-          )}
+          <div className="flex items-center gap-2 pb-1">
+            {client && (
+              <Button variant="outline" disabled={busy} onClick={toggleStatus}>
+                {client.status === "paused" ? "Resume" : "Pause"}
+              </Button>
+            )}
+            <Button onClick={() => setTab("matches")}>Find matches</Button>
+          </div>
         </div>
 
+        {/* meta row */}
+        <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-1.5 px-1 text-xs text-muted-foreground">
+          <span>📍 {location ?? "Location not set"}</span>
+          <span>
+            🎯 {profiles?.length ?? 0} active campaign{(profiles?.length ?? 0) === 1 ? "" : "s"}
+          </span>
+          {client && <span>🗓 Added {fmtDate(client.createdAt)}</span>}
+        </div>
+
+        {/* skill tags */}
+        {skills.length > 0 && (
+          <div className="mb-5 flex flex-wrap gap-1.5 px-1">
+            {skills.map((s) => (
+              <span
+                key={s}
+                className="border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground"
+              >
+                {s}
+              </span>
+            ))}
+          </div>
+        )}
+
         {/* stat row */}
-        <div className="mb-6 grid grid-cols-3 gap-3">
+        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
           <Stat label="New matches" value={matches?.length ?? 0} />
-          <Stat label="Active applications" value={activeApps.length} />
-          <Stat label="Tracks" value={profiles?.length ?? 0} />
+          <Stat label="In flight" value={activeApps.length} />
+          <Stat label="Response rate" value={`${responseRate}%`} />
+          <Stat label="Interviews" value={interviews} />
+          <Stat label="Offers" value={offers} />
         </div>
 
         <Tabs value={tab} onValueChange={setTab}>
@@ -158,29 +203,7 @@ export default function CandidateProfilePage() {
                 <p className="text-sm text-muted-foreground">No open matches for this candidate.</p>
               )}
               {matches?.map((m) => (
-                <div
-                  key={m.id}
-                  className="flex items-center justify-between gap-4 border border-border bg-card p-3"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">
-                      {m.jobTitle ?? "Role pending"}
-                      {m.company ? <span className="text-muted-foreground"> @ {m.company}</span> : null}
-                    </div>
-                    {m.rationale && (
-                      <div className="truncate text-xs text-muted-foreground">{m.rationale}</div>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Chip tone={fitTone(m.fitScore)}>{m.fitScore ?? "—"} fit</Chip>
-                    <Button size="sm" onClick={() => void actMatch(m, "approve")}>
-                      Approve
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => void actMatch(m, "decline")}>
-                      Decline
-                    </Button>
-                  </div>
-                </div>
+                <MatchRow key={m.id} m={m} onAct={actMatch} />
               ))}
             </div>
           </TabsContent>
@@ -247,7 +270,103 @@ export default function CandidateProfilePage() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function MatchRow({
+  m,
+  onAct,
+}: {
+  m: Match;
+  onAct: (m: Match, kind: "approve" | "decline") => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border border-border bg-card">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-4 p-3 text-left"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="text-xs text-muted-foreground">{open ? "▾" : "▸"}</span>
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium">
+              {m.jobTitle ?? "Role pending"}
+              {m.company ? <span className="text-muted-foreground"> @ {m.company}</span> : null}
+            </div>
+            {m.location && <div className="truncate text-xs text-muted-foreground">{m.location}</div>}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {m.confidence && <Chip tone="info">{m.confidence}</Chip>}
+          <Chip tone={fitTone(m.fitScore)}>{m.fitScore ?? "—"} fit</Chip>
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-border px-4 py-3">
+          {(m.guardrails ?? []).length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {m.guardrails!.map((g) => (
+                <Chip key={g} tone="warning">
+                  ⚑ {g}
+                </Chip>
+              ))}
+            </div>
+          )}
+          {m.rationale && <p className="mb-3 text-sm text-muted-foreground">{m.rationale}</p>}
+          <div className="grid gap-4 sm:grid-cols-2">
+            {(m.matchedSkills ?? []).length > 0 && (
+              <div>
+                <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Matched skills
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {m.matchedSkills!.map((s) => (
+                    <Chip key={s} tone="success">
+                      {s}
+                    </Chip>
+                  ))}
+                </div>
+              </div>
+            )}
+            {(m.missingSkills ?? []).length > 0 && (
+              <div>
+                <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Gaps
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {m.missingSkills!.map((s) => (
+                    <Chip key={s} tone="neutral">
+                      {s}
+                    </Chip>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="mt-4 flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => void onAct(m, "decline")}>
+              Decline
+            </Button>
+            <Button size="sm" onClick={() => void onAct(m, "approve")}>
+              Approve &amp; queue résumé
+            </Button>
+            {m.url && (
+              <a
+                href={m.url}
+                target="_blank"
+                rel="noreferrer"
+                className="ml-auto text-xs font-medium text-primary hover:underline"
+              >
+                View job posting →
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: number | string }) {
   return (
     <Card size="sm" className="px-4">
       <div className="text-2xl font-semibold tabular-nums">{value}</div>

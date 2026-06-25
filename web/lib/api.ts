@@ -130,11 +130,13 @@ export const api = {
     }),
 
   listMembers: () => req<Membership[]>("/api/members"),
-  inviteMember: (userId: string, role: StaffRole) =>
-    req<Membership>("/api/members", {
-      method: "POST",
-      body: JSON.stringify({ userId, role }),
-    }),
+  // Admin creates a staff login (username + password). Operators never self-sign-up.
+  createMember: (input: {
+    username: string;
+    password: string;
+    name?: string;
+    role: StaffRole;
+  }) => req<Membership>("/api/members", { method: "POST", body: JSON.stringify(input) }),
 
   // Dashboard analytics (f-136) — org-wide rollups for the operator home.
   dashboardKpis: () => req<DashboardKpis>("/api/dashboard/kpis"),

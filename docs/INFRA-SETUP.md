@@ -58,6 +58,8 @@
 - [ ] `FYJ_INDEX_KEY` — a Supabase key authorized to call `search_jobs`/`get_job`
 - [ ] `OPENAI_API_KEY` — profile resume embeddings (f-134)
 - [ ] `ANTHROPIC_API_KEY` — deep eval / CV (f-136)
+- [ ] `ADMIN_BOOTSTRAP_SECRET` — shared secret guarding `POST /api/seed/org-admin` (f-140). Pick a
+      long random value (`openssl rand -base64 32`); required only to mint the first org + admin.
 
 ## 5. Web UI env (`web/.env.local`, see `web/.env.local.example`)
 - [ ] `NEXT_PUBLIC_API_URL` — the Worker API origin the browser calls (CORS must allow it).
@@ -69,14 +71,34 @@
 
 ---
 
-## Smoke test (run once 1–5 are green — this is the real f-133 verification)
+## Onboarding model (f-140) — admin-created accounts, no public sign-up
+
+Public self-sign-up is **closed**: `POST /api/auth/sign-up/**` returns 403. Accounts are created
+two ways, both server-side via `auth.api.signUpEmail` (off the blocked HTTP route) with the
+`username` plugin (staff sign in by username; a non-deliverable placeholder email is synthesized):
+
+1. **Seed the first org + admin** (once, after secrets are set):
+   ```
+   curl -X POST "$API/api/seed/org-admin" \
+     -H "x-seed-secret: $ADMIN_BOOTSTRAP_SECRET" \
+     -H "content-type: application/json" \
+     -d '{"username":"founder","password":"<temp>","name":"Founder","orgName":"Acme Staffing"}'
+   ```
+   → creates the organization + an `admin` membership (`app.bootstrap_org_for_user`).
+2. **Admin creates operators** from the Members screen (`POST /api/members`,
+   `{username,password,name?,role}`) — adds an **active** membership in the admin's org, no stray org.
+
+## Smoke test (run once 1–5 are green — the real f-133 + f-140 verification)
 1. `wrangler dev` (API) + `cd web && npm run dev` (UI).
-2. Sign up a user → confirm an org + admin membership were auto-created
-   (`select * from memberships;` → one `admin` row for the new user).
-3. `GET /api/me` returns `{ principal: { principal: "staff", role: "admin", ... } }`.
-4. Create a client, a second operator, reassign — confirm **operators only see their assigned
-   clients** (RLS), admins see all.
-5. Enable a client's portal, sign in as that client → confirm **read-only own pipeline +
+2. Seed the first org + admin (above) → `select * from memberships;` shows one `admin` row.
+3. Sign in as the admin (username + password) → `GET /api/me` returns
+   `{ principal: { principal: "staff", role: "admin", ... } }`; confirm `POST /api/auth/sign-up/email`
+   returns **403**.
+4. As admin, create an **operator** (Members screen). Sign out, sign in as the operator → confirm
+   they land in the **admin's org** (not a new one) and see only their assigned clients (RLS).
+5. As the operator: add a client → create a profile/track → upload a résumé → a match surfaces →
+   **Approve & queue résumé** (creates a placement) and **Decline** another (dismissed).
+6. Enable a client's portal, sign in as that client → confirm **read-only own pipeline +
    feedback-insert-only**, and that they cannot see other clients (RLS denies).
 
 If any step leaks across tenants, STOP — that's an RLS regression, not a UI bug.

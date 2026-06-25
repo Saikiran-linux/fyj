@@ -27,14 +27,17 @@ import { Chip, statusTone } from "@/components/ui/chip";
 import { api } from "@/lib/api";
 import type { Membership, StaffRole } from "@/lib/types";
 
-const ROLES: StaffRole[] = ["admin", "operator", "viewer"];
+const ROLES: StaffRole[] = ["operator", "admin", "viewer"];
 
 export default function MembersPage() {
   const [members, setMembers] = useState<Membership[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [userId, setUserId] = useState("");
+  const [username, setUsername] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
   const [role, setRole] = useState<StaffRole>("operator");
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = () =>
     api
@@ -46,13 +49,24 @@ export default function MembersPage() {
     void load();
   }, []);
 
-  async function invite(e: React.FormEvent) {
+  async function create(e: React.FormEvent) {
     e.preventDefault();
-    if (!userId.trim()) return;
+    if (!username.trim() || !password) return;
     setBusy(true);
+    setError(null);
+    setNotice(null);
     try {
-      await api.inviteMember(userId.trim(), role);
-      setUserId("");
+      await api.createMember({
+        username: username.trim(),
+        password,
+        name: name.trim() || undefined,
+        role,
+      });
+      setNotice(`Created ${role} “${username.trim()}”. Share the username + password with them.`);
+      setUsername("");
+      setName("");
+      setPassword("");
+      setRole("operator");
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -65,25 +79,53 @@ export default function MembersPage() {
     <>
       <Topbar title="Settings" />
       <div className="mx-auto max-w-4xl px-8 pb-16">
-        <PageHeader title="Members" subtitle="Org staff and their roles. Admin only." />
+        <PageHeader
+          title="Members"
+          subtitle="Create operator logins and manage org staff. Admin only."
+        />
         {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
+        {notice && <p className="mb-4 text-sm text-emerald-600">{notice}</p>}
 
         <Card className="mb-5 px-5">
-          <form onSubmit={invite} className="flex flex-wrap items-end gap-3">
+          <form onSubmit={create} className="flex flex-wrap items-end gap-3">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="userId">User ID (Better Auth)</Label>
+              <Label htmlFor="username">Username</Label>
               <Input
-                id="userId"
-                value={userId}
-                onChange={(e) => setUserId(e.target.value)}
-                className="w-72"
-                placeholder="usr_…"
+                id="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-44"
+                placeholder="jdoe"
+                autoComplete="off"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="name">Name</Label>
+              <Input
+                id="name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-48"
+                placeholder="Jane Doe (optional)"
+                autoComplete="off"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="password">Temp password</Label>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-44"
+                placeholder="At least 8 characters"
+                autoComplete="new-password"
               />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Role</Label>
               <Select value={role} onValueChange={(v) => setRole(v as StaffRole)}>
-                <SelectTrigger className="h-8 w-36">
+                <SelectTrigger className="h-8 w-32">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -96,7 +138,7 @@ export default function MembersPage() {
               </Select>
             </div>
             <Button type="submit" disabled={busy}>
-              {busy ? "Inviting…" : "Invite"}
+              {busy ? "Creating…" : "Create operator"}
             </Button>
           </form>
         </Card>
@@ -125,22 +167,32 @@ export default function MembersPage() {
                   </TableCell>
                 </TableRow>
               )}
-              {members?.map((m) => (
-                <TableRow key={m.id}>
-                  <TableCell>
-                    <div className="flex items-center gap-2.5">
-                      <Avatar name={m.userId} />
-                      <span className="font-mono text-xs text-muted-foreground">{m.userId}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Chip tone={m.role === "admin" ? "info" : "neutral"}>{m.role}</Chip>
-                  </TableCell>
-                  <TableCell>
-                    <Chip tone={statusTone(m.status)}>{m.status}</Chip>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {members?.map((m) => {
+                const display = m.name || m.username || m.userId;
+                return (
+                  <TableRow key={m.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-2.5">
+                        <Avatar name={display} />
+                        <div className="flex flex-col">
+                          <span className="text-sm text-foreground">{display}</span>
+                          {m.username && (
+                            <span className="font-mono text-xs text-muted-foreground">
+                              @{m.username}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Chip tone={m.role === "admin" ? "info" : "neutral"}>{m.role}</Chip>
+                    </TableCell>
+                    <TableCell>
+                      <Chip tone={statusTone(m.status)}>{m.status}</Chip>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </div>
