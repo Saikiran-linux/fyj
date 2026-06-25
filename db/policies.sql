@@ -403,6 +403,37 @@ grant execute on function app.list_active_campaigns()           to ops_app, ops_
 grant execute on function app.get_campaign_for_match(uuid)      to ops_app, ops_system;
 grant execute on function app.record_campaign_run(uuid, jsonb)  to ops_app, ops_system;
 
+-- f-141: a UI "campaign" = a client_profiles row + its 1:1 campaigns row. The
+-- request role can't INSERT/UPDATE campaigns directly (no write policy on the
+-- table), so creating/activating one goes through this SECURITY DEFINER helper,
+-- which derives org_id/client_id from the profile inside the DB (never trusted
+-- from the caller) — same trust model as record_campaign_run. Idempotent:
+-- ensures the row exists, and only flips status to 'active' when asked.
+create or replace function app.upsert_campaign_for_profile(
+  p_profile_id uuid, p_activate boolean, p_created_by text)
+  returns uuid language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_org uuid; v_client uuid; v_campaign uuid;
+begin
+  select org_id, client_id into v_org, v_client
+    from public.client_profiles where id = p_profile_id;
+  if not found then return null; end if;
+
+  select id into v_campaign from public.campaigns where profile_id = p_profile_id;
+  if v_campaign is null then
+    insert into public.campaigns (org_id, client_id, profile_id, name, status, created_by)
+    values (v_org, v_client, p_profile_id, 'Campaign',
+            case when p_activate then 'active'::public.campaign_status else 'draft'::public.campaign_status end,
+            p_created_by)
+    returning id into v_campaign;
+  elsif p_activate then
+    update public.campaigns set status = 'active', updated_at = now()
+      where id = v_campaign and status <> 'active';
+  end if;
+  return v_campaign;
+end $$;
+
+grant execute on function app.upsert_campaign_for_profile(uuid, boolean, text) to ops_app, ops_system;
+
 
 -- ============================================================================
 -- Operator dashboard analytics (f-139 dashboard)

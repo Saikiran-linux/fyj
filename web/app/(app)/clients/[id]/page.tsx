@@ -42,8 +42,32 @@ export default function CandidateProfilePage() {
   const [tab, setTab] = useState("overview");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [matching, setMatching] = useState(false);
+  const [resumeMatchId, setResumeMatchId] = useState<string | null>(null);
 
   const loadProfiles = () => api.listProfiles(id).then(setProfiles);
+  const reloadMatches = () => api.listMatches({ candidateId: id }).then(setMatches).catch(() => {});
+
+  async function findMatches(profileId?: string) {
+    const target = profileId
+      ? (profiles ?? []).find((p) => p.id === profileId)
+      : (profiles ?? []).find((p) => p.embeddedAt);
+    if (!target?.embeddedAt) {
+      setError("Upload a résumé to a campaign first — matching needs an embedded profile.");
+      return;
+    }
+    setMatching(true);
+    setError(null);
+    try {
+      await api.runMatch(target.id);
+      await reloadMatches();
+      setTab("matches");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setMatching(false);
+    }
+  }
 
   useEffect(() => {
     api.getClient(id).then(setClient).catch((e: Error) => setError(e.message));
@@ -68,8 +92,12 @@ export default function CandidateProfilePage() {
 
   async function actMatch(m: Match, kind: "approve" | "decline") {
     try {
-      if (kind === "approve") await api.approveMatch(m.id);
-      else await api.declineMatch(m.id);
+      if (kind === "approve") {
+        await api.approveMatch(m.id);
+        setResumeMatchId(m.id); // open the tailored-résumé drawer (tailoring runs in bg)
+      } else {
+        await api.declineMatch(m.id);
+      }
       setMatches((cur) => (cur ? cur.filter((x) => x.id !== m.id) : cur));
       api.listClientApplications(id).then(setApps).catch(() => {});
     } catch (e) {
@@ -135,7 +163,9 @@ export default function CandidateProfilePage() {
                 {client.status === "paused" ? "Resume" : "Pause"}
               </Button>
             )}
-            <Button onClick={() => setTab("matches")}>Find matches</Button>
+            <Button onClick={() => void findMatches()} disabled={matching}>
+              {matching ? "Finding…" : "Find matches"}
+            </Button>
           </div>
         </div>
 
@@ -197,20 +227,37 @@ export default function CandidateProfilePage() {
 
           {/* Matches */}
           <TabsContent value="matches" className="pt-4">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">
+                AI-ranked jobs with rationale, matched skills & guardrails. Approve to tailor the résumé.
+              </p>
+              <Button size="sm" variant="outline" onClick={() => void findMatches()} disabled={matching}>
+                {matching ? "Finding…" : "Find matches"}
+              </Button>
+            </div>
             <div className="flex flex-col gap-2">
               {matches === null && <p className="text-sm text-muted-foreground">Loading…</p>}
               {matches?.length === 0 && (
-                <p className="text-sm text-muted-foreground">No open matches for this candidate.</p>
+                <p className="text-sm text-muted-foreground">
+                  No matches yet — upload a résumé to a campaign, then “Find matches”.
+                </p>
               )}
               {matches?.map((m) => (
-                <MatchRow key={m.id} m={m} onAct={actMatch} />
+                <MatchRow key={m.id} m={m} onAct={actMatch} onResume={() => setResumeMatchId(m.id)} />
               ))}
             </div>
           </TabsContent>
 
-          {/* Tracks */}
+          {/* Tracks / Campaigns */}
           <TabsContent value="tracks" className="pt-4">
-            <TracksPanel clientId={id} profiles={profiles} reload={loadProfiles} />
+            <TracksPanel
+              clientId={id}
+              profiles={profiles}
+              reload={loadProfiles}
+              reloadMatches={reloadMatches}
+              onFindMatches={findMatches}
+              matching={matching}
+            />
           </TabsContent>
 
           {/* Applications */}
@@ -266,6 +313,9 @@ export default function CandidateProfilePage() {
           </TabsContent>
         </Tabs>
       </div>
+      {resumeMatchId && (
+        <TailoredResumeDrawer matchId={resumeMatchId} onClose={() => setResumeMatchId(null)} />
+      )}
     </>
   );
 }
@@ -273,9 +323,11 @@ export default function CandidateProfilePage() {
 function MatchRow({
   m,
   onAct,
+  onResume,
 }: {
   m: Match;
   onAct: (m: Match, kind: "approve" | "decline") => void | Promise<void>;
+  onResume: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -349,6 +401,9 @@ function MatchRow({
             <Button size="sm" onClick={() => void onAct(m, "approve")}>
               Approve &amp; queue résumé
             </Button>
+            <Button size="sm" variant="ghost" onClick={onResume}>
+              Tailored résumé
+            </Button>
             {m.url && (
               <a
                 href={m.url}
@@ -363,6 +418,140 @@ function MatchRow({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Tailored-résumé drawer (f-141). After Approve, the tailoring graph runs in the
+ * background; this polls until the Markdown is ready, lets the operator edit +
+ * Save, and exports a PDF via the browser's print-to-PDF (no extra deps).
+ */
+function mdToHtml(md: string): string {
+  const esc = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const lines = md.split(/\r?\n/);
+  const out: string[] = [];
+  let inList = false;
+  const inline = (s: string) =>
+    esc(s)
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  for (const ln of lines) {
+    const h = /^(#{1,4})\s+(.*)$/.exec(ln);
+    const li = /^[-*]\s+(.*)$/.exec(ln);
+    if (li) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push(`<li>${inline(li[1] ?? "")}</li>`);
+      continue;
+    }
+    if (inList) { out.push("</ul>"); inList = false; }
+    if (h) {
+      const level = (h[1] ?? "#").length;
+      out.push(`<h${level}>${inline(h[2] ?? "")}</h${level}>`);
+    } else if (ln.trim() === "") out.push("");
+    else out.push(`<p>${inline(ln)}</p>`);
+  }
+  if (inList) out.push("</ul>");
+  return out.join("\n");
+}
+
+function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: () => void }) {
+  const [markdown, setMarkdown] = useState<string | null>(null);
+  const [status, setStatus] = useState<"pending" | "ready">("pending");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const r = await api.getTailoredResume(matchId);
+        if (cancelled) return;
+        if (r.status === "ready" && r.markdown) {
+          setMarkdown(r.markdown);
+          setStatus("ready");
+          return;
+        }
+      } catch {
+        /* keep polling */
+      }
+      if (++tries < 30 && !cancelled) timer = setTimeout(poll, 3000);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [matchId]);
+
+  async function save() {
+    if (markdown == null) return;
+    setSaving(true);
+    setSaved(false);
+    try {
+      await api.saveTailoredResume(matchId, markdown);
+      setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function downloadPdf() {
+    if (markdown == null) return;
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Tailored résumé</title>
+      <style>body{font-family:Georgia,serif;max-width:720px;margin:40px auto;padding:0 24px;line-height:1.5;color:#111}
+      h1{font-size:24px;margin:0 0 4px} h2{font-size:16px;border-bottom:1px solid #ccc;padding-bottom:2px;margin:18px 0 8px}
+      h3{font-size:14px;margin:12px 0 4px} ul{margin:4px 0 8px 18px} p{margin:4px 0}</style></head>
+      <body>${mdToHtml(markdown)}<script>window.onload=function(){window.print()}</script></body></html>`);
+    w.document.close();
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} />
+      <aside className="fixed right-0 top-0 z-50 flex h-full w-full max-w-2xl flex-col border-l border-border bg-card shadow-xl">
+        <div className="flex items-center justify-between border-b border-border px-5 py-3">
+          <div>
+            <div className="font-heading text-sm font-semibold">Tailored résumé</div>
+            <div className="text-xs text-muted-foreground">
+              {status === "pending" ? "Tailoring in progress…" : "Editable — Save changes, then export PDF."}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            ✕
+          </button>
+        </div>
+        <div className="flex-1 overflow-auto p-4">
+          {status === "pending" ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              Drafting & critiquing the résumé… this takes a few seconds.
+            </div>
+          ) : (
+            <textarea
+              value={markdown ?? ""}
+              onChange={(e) => {
+                setMarkdown(e.target.value);
+                setSaved(false);
+              }}
+              className="h-full min-h-[420px] w-full resize-none border border-border bg-background p-3 font-mono text-xs leading-relaxed outline-none"
+            />
+          )}
+        </div>
+        <div className="flex items-center gap-2 border-t border-border px-5 py-3">
+          <Button size="sm" disabled={status !== "ready" || saving} onClick={() => void save()}>
+            {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
+          </Button>
+          <Button size="sm" variant="outline" disabled={status !== "ready"} onClick={downloadPdf}>
+            Download PDF
+          </Button>
+          <span className="ml-auto text-xs text-muted-foreground">Markdown</span>
+        </div>
+      </aside>
+    </>
   );
 }
 
@@ -388,10 +577,16 @@ function TracksPanel({
   clientId,
   profiles,
   reload,
+  reloadMatches,
+  onFindMatches,
+  matching,
 }: {
   clientId: string;
   profiles: ClientProfile[] | null;
   reload: () => Promise<unknown>;
+  reloadMatches: () => Promise<unknown>;
+  onFindMatches: (profileId: string) => Promise<void> | void;
+  matching: boolean;
 }) {
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
@@ -410,43 +605,76 @@ function TracksPanel({
   }
 
   return (
-    <Card className="px-5">
-      <form onSubmit={add} className="mb-4 flex items-end gap-2">
-        <Input
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          placeholder="e.g. Senior Backend · Remote EU"
-          className="flex-1"
+    <div className="flex flex-col gap-4">
+      <Card className="px-5">
+        <div className="mb-1 text-sm font-medium">New campaign</div>
+        <p className="mb-3 text-xs text-muted-foreground">
+          A campaign = a résumé + targeting criteria. Upload a résumé and the AI extracts the
+          candidate, sets the criteria, and surfaces matches automatically.
+        </p>
+        <form onSubmit={add} className="flex items-end gap-2">
+          <Input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="e.g. Senior Backend · Remote"
+            className="flex-1"
+          />
+          <Button type="submit" disabled={busy}>
+            {busy ? "Adding…" : "Add campaign"}
+          </Button>
+        </form>
+      </Card>
+
+      {profiles === null && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {profiles?.length === 0 && (
+        <p className="text-sm text-muted-foreground">No campaigns yet — add one to start sourcing.</p>
+      )}
+      {profiles?.map((p) => (
+        <CampaignCard
+          key={p.id}
+          clientId={clientId}
+          profile={p}
+          reload={reload}
+          reloadMatches={reloadMatches}
+          onFindMatches={onFindMatches}
+          matching={matching}
         />
-        <Button type="submit" disabled={busy}>
-          {busy ? "Adding…" : "Add track"}
-        </Button>
-      </form>
-      <div className="divide-y divide-border">
-        {profiles === null && <p className="py-3 text-sm text-muted-foreground">Loading…</p>}
-        {profiles?.length === 0 && (
-          <p className="py-3 text-sm text-muted-foreground">No tracks yet — add one to start matching.</p>
-        )}
-        {profiles?.map((p) => (
-          <TrackRow key={p.id} clientId={clientId} profile={p} reload={reload} />
-        ))}
-      </div>
-    </Card>
+      ))}
+    </div>
   );
 }
 
-function TrackRow({
+function CampaignCard({
   clientId,
   profile,
   reload,
+  reloadMatches,
+  onFindMatches,
+  matching,
 }: {
   clientId: string;
   profile: ClientProfile;
   reload: () => Promise<unknown>;
+  reloadMatches: () => Promise<unknown>;
+  onFindMatches: (profileId: string) => Promise<void> | void;
+  matching: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  const candidate = (profile.parsedProfile as { candidate?: Record<string, unknown> } | null)
+    ?.candidate as
+    | {
+        skills?: string[];
+        seniority?: string;
+        minComp?: number;
+        workplace?: string;
+        targetTitles?: string[];
+        location?: string;
+      }
+    | undefined;
 
   async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -454,9 +682,12 @@ function TrackRow({
     if (!file) return;
     setBusy(true);
     setErr(null);
+    setNote(null);
     try {
-      await api.uploadResume(clientId, profile.id, file);
+      const res = await api.uploadResume(clientId, profile.id, file);
+      setNote(`Résumé processed — ${res.surfaced} matches surfaced.`);
       await reload();
+      await reloadMatches();
     } catch (e2) {
       setErr((e2 as Error).message);
     } finally {
@@ -477,33 +708,51 @@ function TrackRow({
   }
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 py-3">
-      <div className="min-w-0">
-        <div className="truncate text-sm font-medium text-foreground">{profile.label}</div>
-        {err && <div className="mt-0.5 text-xs text-destructive">{err}</div>}
-      </div>
-      <div className="flex items-center gap-2">
-        <button
-          onClick={toggleAutopilot}
-          disabled={busy}
-          title="Autopilot auto-flows high-confidence matches"
-          className="disabled:opacity-50"
-        >
-          <Chip tone={profile.autopilot ? "success" : "neutral"}>
-            autopilot {profile.autopilot ? "on" : "off"}
+    <Card className="px-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-foreground">{profile.label}</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            {candidate?.seniority ? `${candidate.seniority} · ` : ""}
+            {candidate?.workplace ?? ""}
+            {candidate?.minComp ? ` · ≥ $${Math.round(candidate.minComp / 1000)}k` : ""}
+            {candidate?.location ? ` · ${candidate.location}` : ""}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button onClick={toggleAutopilot} disabled={busy} className="disabled:opacity-50">
+            <Chip tone={profile.autopilot ? "success" : "neutral"}>
+              autopilot {profile.autopilot ? "on" : "off"}
+            </Chip>
+          </button>
+          <Chip tone={profile.embeddedAt ? "success" : "warning"}>
+            {busy ? "working…" : profile.embeddedAt ? "embedded" : "needs résumé"}
           </Chip>
-        </button>
-        {profile.embeddedAt && (
-          <Link
-            href={`/jobs?profile=${profile.id}`}
-            className="text-xs font-medium text-primary hover:underline"
-          >
-            View jobs →
-          </Link>
-        )}
-        <Chip tone={profile.embeddedAt ? "success" : "warning"}>
-          {busy ? "working…" : profile.embeddedAt ? "embedded" : "needs embed"}
-        </Chip>
+        </div>
+      </div>
+
+      {(candidate?.targetTitles?.length || candidate?.skills?.length) && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {(candidate?.targetTitles ?? []).slice(0, 4).map((t) => (
+            <Chip key={t} tone="info">
+              {t}
+            </Chip>
+          ))}
+          {(candidate?.skills ?? []).slice(0, 8).map((s) => (
+            <span
+              key={s}
+              className="border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground"
+            >
+              {s}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {note && <div className="mt-3 text-xs text-emerald-600">{note}</div>}
+      {err && <div className="mt-3 text-xs text-destructive">{err}</div>}
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
         <input
           ref={fileRef}
           type="file"
@@ -514,7 +763,14 @@ function TrackRow({
         <Button variant="secondary" size="sm" disabled={busy} onClick={() => fileRef.current?.click()}>
           {profile.embeddedAt ? "Replace résumé" : "Upload résumé"}
         </Button>
+        <Button
+          size="sm"
+          disabled={!profile.embeddedAt || matching}
+          onClick={() => void onFindMatches(profile.id)}
+        >
+          {matching ? "Finding…" : "Find matches"}
+        </Button>
       </div>
-    </div>
+    </Card>
   );
 }

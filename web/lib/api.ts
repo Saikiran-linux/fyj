@@ -113,8 +113,16 @@ export const api = {
   uploadResume: (clientId: string, profileId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return upload<ClientProfile>(`/api/clients/${clientId}/profiles/${profileId}/resume`, fd);
+    return upload<{ profile: ClientProfile; surfaced: number }>(
+      `/api/clients/${clientId}/profiles/${profileId}/resume`,
+      fd,
+    );
   },
+  // On-demand "Find matches": surface the top ~25 for this profile now.
+  runMatch: (profileId: string) =>
+    req<{ surfaced: number; matches: Match[] }>(`/api/profiles/${profileId}/match`, {
+      method: "POST",
+    }),
 
   // Index search (f-134): a profile's embedding, or an ad-hoc text query.
   profileJobs: (profileId: string) => req<JobHit[]>(`/api/profiles/${profileId}/jobs`),
@@ -155,11 +163,24 @@ export const api = {
     return req<Match[]>(`/api/matches${q ? `?${q}` : ""}`);
   },
   approveMatch: (matchId: string) =>
-    req<ApproveMatchResult>(`/api/matches/${matchId}/approve`, { method: "POST" }),
+    req<ApproveMatchResult & { tailoring?: boolean }>(`/api/matches/${matchId}/approve`, {
+      method: "POST",
+    }),
   declineMatch: (matchId: string) =>
     req<CampaignMatch>(`/api/matches/${matchId}/action`, {
       method: "POST",
       body: JSON.stringify({ action: "dismissed" }),
+    }),
+
+  // Tailored résumé (f-141) — Markdown the operator edits, then exports to PDF.
+  getTailoredResume: (matchId: string) =>
+    req<{ status: "pending" | "ready"; markdown: string | null; model?: string; generatedAt?: string }>(
+      `/api/matches/${matchId}/resume`,
+    ),
+  saveTailoredResume: (matchId: string, markdown: string) =>
+    req<{ ok: true }>(`/api/matches/${matchId}/resume`, {
+      method: "PUT",
+      body: JSON.stringify({ markdown }),
     }),
 
   // Calendar (f-139 P4) — month: 0-11
