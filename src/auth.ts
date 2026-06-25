@@ -1,6 +1,6 @@
 import { betterAuth } from "better-auth";
+import { username } from "better-auth/plugins";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { sql } from "drizzle-orm";
 import type { DB } from "./db/client";
 import * as authSchema from "./db/auth-schema";
 
@@ -12,12 +12,23 @@ import * as authSchema from "./db/auth-schema";
  * auto-read them.
  *
  * Auth owns ONLY the user/session/account/verification tables (auth-schema.ts).
- * Org/role/membership live in the app's own tenancy tables (schema.ts), created
- * on signup by the user.create.after hook below — we deliberately do NOT use the
- * Better Auth organization plugin (HOSTED_PLATFORM_PLAN decision: app-owned,
- * RLS-governed orgs). The hook calls a SECURITY DEFINER function so the request
- * role `ops_app` (no BYPASSRLS) can bootstrap an org without an INSERT policy on
- * organizations.
+ * Org/role/membership live in the app's own tenancy tables (schema.ts) — we
+ * deliberately do NOT use the Better Auth organization plugin
+ * (HOSTED_PLATFORM_PLAN decision: app-owned, RLS-governed orgs).
+ *
+ * ONBOARDING MODEL (locked): public self-sign-up is closed (the
+ * `/api/auth/sign-up/**` HTTP route is hard-blocked in src/api.ts). Orgs +
+ * their admin are created via the protected seed endpoint, and admins create
+ * operators from the Members screen. Both paths call `auth.api.signUpEmail`
+ * DIRECTLY (off the HTTP route, so the block doesn't apply and no session
+ * cookie is set on the caller's response) and then insert the membership /
+ * call `app.bootstrap_org_for_user` themselves. There is therefore NO
+ * `user.create.after` org-bootstrap hook anymore — a stray signup must never
+ * mint an org on its own.
+ *
+ * The `username` plugin lets staff sign in with a username instead of email
+ * (email is still required + unique on the user row; for username-only staff we
+ * synthesize a placeholder — see src/db/repo.ts createStaffMember).
  *
  * `backgroundTasks.handler` is required on serverless so deferred work (timing-
  * safe email sends, etc.) is kept alive; the caller supplies the platform
@@ -52,25 +63,16 @@ export function createAuth(env: Env, db: DB, waitUntil?: (p: Promise<unknown>) =
     baseURL: env.BETTER_AUTH_URL,
     trustedOrigins,
     database: drizzleAdapter(db, { provider: "pg", schema: authSchema }),
+    plugins: [username()],
     emailAndPassword: {
       enabled: true,
-      // No email provider wired yet — keep signup unblocked. Flip on once
-      // emailVerification.sendVerificationEmail is configured (f-138 digests).
+      // No email provider wired yet. Verification stays off (placeholder emails
+      // for username-only staff are never deliverable). The public sign-up
+      // route is blocked in src/api.ts; users are created only by the seed +
+      // admin paths.
       requireEmailVerification: false,
     },
     advanced,
-    databaseHooks: {
-      user: {
-        create: {
-          after: async (createdUser) => {
-            // Every new staff signup gets its own org + admin membership.
-            await db.execute(
-              sql`select app.bootstrap_org_for_user(${createdUser.id}, ${createdUser.name ?? createdUser.email})`,
-            );
-          },
-        },
-      },
-    },
   });
 }
 

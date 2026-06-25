@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { sql } from "drizzle-orm";
 import { createDb, type DB, type Principal } from "./db/client";
 import { createAuth } from "./auth";
 import { resolvePrincipal } from "./principal";
@@ -28,6 +29,38 @@ interface UploadedFile {
 
 const isStaff = (p: Principal): p is Extract<Principal, { principal: "staff" }> =>
   p.principal === "staff";
+
+/**
+ * Create a Better Auth user from a username + password (used by the seed and
+ * admin "create operator" paths). Email/password is the underlying credential,
+ * so we synthesize a non-deliverable placeholder email — it's never used to log
+ * in (staff sign in by username) and is unique because the username is. Returns
+ * the new user id; throws the Better Auth error on conflict/validation.
+ */
+async function createAuthUser(
+  auth: ReturnType<typeof createAuth>,
+  input: { username: string; password: string; name?: string },
+): Promise<string> {
+  const res = await auth.api.signUpEmail({
+    body: {
+      email: `${input.username.toLowerCase()}@staff.fyj.local`,
+      password: input.password,
+      name: input.name?.trim() || input.username,
+      username: input.username,
+    },
+  });
+  return res.user.id;
+}
+
+/** Best-effort message for a failed user creation (e.g. username taken). */
+function authUserError(e: unknown): string {
+  if (e && typeof e === "object" && "body" in e) {
+    const body = (e as { body?: { message?: string; code?: string } }).body;
+    if (body?.message) return body.message;
+    if (body?.code) return body.code;
+  }
+  return e instanceof Error ? e.message : "could not create user";
+}
 
 /**
  * The ops-console HTTP API (f-133). Better Auth owns /api/auth/**; every other
@@ -68,15 +101,56 @@ export function createApi() {
     }
   });
 
-  // Better Auth: sign-up / sign-in / session / sign-out / …
+  // ONBOARDING: public self-sign-up is closed. Hard-block the Better Auth
+  // sign-up HTTP route (every method/sub-path) BEFORE the catch-all below — the
+  // seed + admin "create operator" paths create users via auth.api.signUpEmail
+  // directly (off this route), so this only stops anonymous self-registration.
+  app.all("/api/auth/sign-up/*", (c) => c.json({ error: "signup_disabled" }, 403));
+
+  // Better Auth: sign-in / session / sign-out / …
   app.on(["GET", "POST"], "/api/auth/*", (c) => {
     const auth = createAuth(c.env, c.get("db"), (p) => c.executionCtx.waitUntil(p));
     return auth.handler(c.req.raw);
   });
 
+  // Seed: create the first org + its admin. Unauthenticated by design (there is
+  // no admin yet); guarded by a shared secret instead. Exempt from the session
+  // middleware below, like /api/auth.
+  app.post("/api/seed/org-admin", async (c) => {
+    const secret = c.env.ADMIN_BOOTSTRAP_SECRET;
+    if (!secret || c.req.header("x-seed-secret") !== secret)
+      return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      username?: string;
+      password?: string;
+      name?: string;
+      orgName?: string;
+    };
+    const username = body.username?.trim();
+    if (!username || !body.password) return c.json({ error: "username + password required" }, 400);
+    const db = c.get("db");
+    const auth = createAuth(c.env, db, (p) => c.executionCtx.waitUntil(p));
+    let userId: string;
+    try {
+      userId = await createAuthUser(auth, {
+        username,
+        password: body.password,
+        name: body.name,
+      });
+    } catch (e) {
+      return c.json({ error: authUserError(e) }, 409);
+    }
+    // SECURITY DEFINER: creates organization + admin membership atomically.
+    const rows = (await db.execute(
+      sql`select app.bootstrap_org_for_user(${userId}, ${body.orgName ?? `${username}'s org`}) as org_id`,
+    )) as unknown as Array<{ org_id: string }>;
+    return c.json({ userId, orgId: rows[0]?.org_id ?? null, username }, 201);
+  });
+
   // Authn + tenant resolution for the rest of /api.
   app.use("/api/*", async (c, next) => {
     if (c.req.path.startsWith("/api/auth/")) return next();
+    if (c.req.path.startsWith("/api/seed/")) return next();
     const auth = createAuth(c.env, c.get("db"), (p) => c.executionCtx.waitUntil(p));
     const session = await auth.api.getSession({ headers: c.req.raw.headers });
     if (!session?.user) return c.json({ error: "unauthenticated" }, 401);
@@ -373,14 +447,34 @@ export function createApi() {
     return c.json(await repo.listMembers(c.get("db"), p));
   });
 
+  // Admin creates a staff account (operator/admin/viewer) with username +
+  // password. We create the Better Auth user directly (off the blocked sign-up
+  // route, so no session cookie is minted for the admin), then add the active
+  // membership in the admin's org. Username is globally unique (Better Auth),
+  // which also makes the synthesized placeholder email unique.
   app.post("/api/members", async (c) => {
     const p = c.get("principal");
     if (!isStaff(p) || p.role !== "admin") return c.json({ error: "forbidden" }, 403);
-    const body = (await c.req.json().catch(() => ({}))) as { userId?: string; role?: string };
+    const body = (await c.req.json().catch(() => ({}))) as {
+      username?: string;
+      password?: string;
+      name?: string;
+      role?: string;
+    };
+    const username = body.username?.trim();
     const role = body.role as repo.MemberRole | undefined;
-    if (!body.userId || !role || !memberRole.enumValues.includes(role))
-      return c.json({ error: "userId + valid role required" }, 400);
-    const row = await repo.inviteMember(c.get("db"), p, body.userId, role);
+    if (!username || !body.password || !role || !memberRole.enumValues.includes(role))
+      return c.json({ error: "username + password + valid role required" }, 400);
+
+    const db = c.get("db");
+    const auth = createAuth(c.env, db, (pr) => c.executionCtx.waitUntil(pr));
+    let userId: string;
+    try {
+      userId = await createAuthUser(auth, { username, password: body.password, name: body.name });
+    } catch (e) {
+      return c.json({ error: authUserError(e) }, 409);
+    }
+    const row = await repo.addStaffMembership(db, p, userId, role);
     return c.json(row, 201);
   });
 

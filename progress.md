@@ -4,6 +4,38 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-25 — f-140: admin→operator→client onboarding MVP (username/password)
+
+The console's onboarding model was inverted to match the product: **public self-sign-up is closed**
+and accounts are **created by an admin**, not self-registered (the old flow had every signup mint a
+separate org via a `user.create.after` hook, then invite-by-raw-user-id).
+
+- **Auth (server):** added the Better Auth `username` plugin (`src/auth.ts`; client
+  `usernameClient()` in `web/lib/auth-client.ts`) — staff sign in by **username**. Migration
+  `drizzle/0003_curious_triton.sql` adds `user.username` (unique) + `display_username`. Removed the
+  org-bootstrap `databaseHook`; `src/api.ts` **hard-blocks** `POST /api/auth/sign-up/**` (403).
+- **Admin creates operators:** `POST /api/members {username,password,name?,role}` (admin-gated)
+  creates the auth user via `auth.api.signUpEmail` directly (off the blocked route, so no cookie is
+  minted for the admin; a non-deliverable placeholder email is synthesized) then
+  `repo.addStaffMembership` adds an **active** membership in the admin's org. `listMembers` now joins
+  `user` for username/name.
+- **Seed path:** `POST /api/seed/org-admin` (guarded by `ADMIN_BOOTSTRAP_SECRET`) mints the first
+  org + admin via `app.bootstrap_org_for_user`. Documented in `docs/INFRA-SETUP.md` (+ secret,
+  + rewritten smoke test).
+- **Web:** `sign-in/page.tsx` → username/password only, no sign-up toggle; `members/page.tsx` →
+  "Create operator" form (username/password/name/role) + usernames in the table.
+- **Client profile to the attached design** (decoded from the standalone HTML's gzip+base64 bundle):
+  `clients/[id]/page.tsx` gains a cover-band hero + overlapping 96px avatar, meta row, skill tags,
+  5-stat row (matches/in-flight/response%/interviews/offers), and **expandable match rows**
+  (rationale, matched skills, gaps, guardrails, confidence) with **Decline** / **Approve & queue
+  résumé** — the operator accept/decline, wired to existing `approveMatch`/`declineMatch`.
+- **GATES GREEN:** `npm run typecheck` (Worker) + `cd web && npm run typecheck` + `npm run build`
+  (13 routes; `/clients/[id]` 5.37 kB, `/members` 3.84 kB, `/sign-in` 4.45 kB) + `db:generate`
+  no-drift. NOT runtime-verified (no infra this session): before live, apply migration `0003` to
+  Neon, set `ADMIN_BOOTSTRAP_SECRET`, `wrangler deploy`, and seed the first admin.
+
+---
+
 ## 2026-06-24 — f-139 Phase 4: Calendar — f-139 COMPLETE
 
 Final phase of the operator-console rebuild (**f-139**). No schema/migration — schedule events are

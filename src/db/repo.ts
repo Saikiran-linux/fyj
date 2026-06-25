@@ -16,6 +16,7 @@ import {
   feedbackSignal,
   memberRole,
 } from "./schema";
+import { user } from "./auth-schema";
 
 /**
  * Org-scoped repository (f-133) — THE only sanctioned way the request path
@@ -214,21 +215,43 @@ export function setMatchAction(db: DB, who: Principal, matchId: string, action: 
   });
 }
 
-// ── memberships (admin: list + invite) ─────────────────────────────────
+// ── memberships (admin: list + create operator) ────────────────────────
+// listMembers joins `user` (allow-all to ops_app) so the UI shows usernames/
+// names rather than opaque ids. RLS on memberships still scopes to the org.
 export function listMembers(db: DB, who: Principal) {
   return withTenant(db, who, (tx) =>
-    tx.select().from(memberships).where(eq(memberships.orgId, who.orgId)),
+    tx
+      .select({
+        id: memberships.id,
+        orgId: memberships.orgId,
+        userId: memberships.userId,
+        role: memberships.role,
+        status: memberships.status,
+        username: user.displayUsername,
+        name: user.name,
+        createdAt: memberships.createdAt,
+      })
+      .from(memberships)
+      .leftJoin(user, eq(user.id, memberships.userId))
+      .where(eq(memberships.orgId, who.orgId))
+      .orderBy(desc(memberships.createdAt)),
   );
 }
 
-export function inviteMember(db: DB, who: Principal, userId: string, role: MemberRole) {
+/**
+ * Add an already-created auth user to the caller's org as active staff. The
+ * Better Auth user is created in the API route (auth.api.signUpEmail) BEFORE
+ * this runs — repo.ts never holds the auth instance. Idempotent on
+ * (orgId, userId). The admin-write RLS policy on memberships authorizes it.
+ */
+export function addStaffMembership(db: DB, who: Principal, userId: string, role: MemberRole) {
   return withTenant(db, who, async (tx) => {
     const [row] = await tx
       .insert(memberships)
-      .values({ orgId: who.orgId, userId, role, status: "invited" })
+      .values({ orgId: who.orgId, userId, role, status: "active" })
       .onConflictDoNothing({ target: [memberships.orgId, memberships.userId] })
       .returning();
-    if (row) await audit(tx, who, "member.invite", "membership", row.id, { userId, role });
+    if (row) await audit(tx, who, "member.create", "membership", row.id, { userId, role });
     return row ?? null;
   });
 }

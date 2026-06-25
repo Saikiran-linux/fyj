@@ -76,6 +76,9 @@ export interface Membership {
   userId: string;
   role: StaffRole;
   status: "active" | "invited" | "disabled";
+  // joined from the auth user (null for legacy rows without a username)
+  username: string | null;
+  name: string | null;
 }
 
 // ── dashboard analytics (f-139) ────────────────────────────────────────

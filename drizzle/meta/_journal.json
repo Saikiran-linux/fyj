@@ -22,6 +22,13 @@
       "when": 1782280135660,
       "tag": "0002_easy_praxagora",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1782332179402,
+      "tag": "0003_curious_triton",
+      "breakpoints": true
     }
   ]
 }

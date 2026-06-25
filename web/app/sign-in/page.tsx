@@ -2,15 +2,13 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { signIn, signUp } from "@/lib/auth-client";
+import { signIn } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 export default function SignInPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -20,12 +18,9 @@ export default function SignInPage() {
     setBusy(true);
     setError(null);
     try {
-      const res =
-        mode === "sign-in"
-          ? await signIn.email({ email, password })
-          : await signUp.email({ email, password, name: name || email });
+      const res = await signIn.username({ username: username.trim(), password });
       if (res.error) {
-        setError(res.error.message ?? "Something went wrong");
+        setError(res.error.message ?? "Invalid username or password");
         return;
       }
       router.push("/");
@@ -48,30 +43,19 @@ export default function SignInPage() {
           </span>
         </div>
 
-        <h1 className="mb-1 font-heading text-xl font-bold text-foreground">
-          {mode === "sign-in" ? "Welcome back" : "Create your workspace"}
-        </h1>
+        <h1 className="mb-1 font-heading text-xl font-bold text-foreground">Welcome back</h1>
         <p className="mb-6 text-sm text-muted-foreground">
-          {mode === "sign-in"
-            ? "Sign in to your operator account."
-            : "Sign up — we’ll set up your org automatically."}
+          Sign in with the username your admin gave you.
         </p>
 
         <form onSubmit={submit} className="flex flex-col gap-3">
-          {mode === "sign-up" && (
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Your name"
-              className="h-10"
-            />
-          )}
           <Input
-            type="email"
             required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="Email"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="Username"
+            autoComplete="username"
+            autoFocus
             className="h-10"
           />
           <Input
@@ -80,23 +64,18 @@ export default function SignInPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Password"
+            autoComplete="current-password"
             className="h-10"
           />
           {error && <p className="text-sm text-destructive">{error}</p>}
           <Button type="submit" disabled={busy} className="mt-1 h-10">
-            {busy ? "…" : mode === "sign-in" ? "Sign in" : "Create account"}
+            {busy ? "…" : "Sign in"}
           </Button>
         </form>
 
-        <button
-          onClick={() => {
-            setMode((m) => (m === "sign-in" ? "sign-up" : "sign-in"));
-            setError(null);
-          }}
-          className="mt-4 w-full text-center text-sm text-muted-foreground hover:text-foreground"
-        >
-          {mode === "sign-in" ? "No account? Sign up" : "Have an account? Sign in"}
-        </button>
+        <p className="mt-4 text-center text-xs text-muted-foreground">
+          Accounts are created by your organization admin.
+        </p>
       </div>
     </div>
   );

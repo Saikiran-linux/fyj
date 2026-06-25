@@ -46,5 +46,6 @@
   "triggers": { "crons": ["17 * * * *"] }
 
   // Secrets (set via `wrangler secret put`, never here):
-  //   BETTER_AUTH_SECRET, OPENAI_API_KEY, ANTHROPIC_API_KEY, FYJ_INDEX_URL, FYJ_INDEX_KEY
+  //   BETTER_AUTH_SECRET, ADMIN_BOOTSTRAP_SECRET, OPENAI_API_KEY, ANTHROPIC_API_KEY,
+  //   FYJ_INDEX_URL, FYJ_INDEX_KEY
 }
