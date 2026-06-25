@@ -527,11 +527,17 @@ function mdToHtml(md: string): string {
 
 function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: () => void }) {
   const [markdown, setMarkdown] = useState<string | null>(null);
-  const [status, setStatus] = useState<"pending" | "ready">("pending");
+  const [status, setStatus] = useState<"pending" | "ready" | "timeout">("pending");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [retry, setRetry] = useState(0);
 
+  // The tailor graph (draft → critique → revise) can take well over a minute
+  // when the critique triggers a revision pass, so poll for a few minutes before
+  // backing off to a "taking longer" state the operator can re-check — never
+  // leave it stuck silently. ~3 min budget at 3s intervals.
   useEffect(() => {
+    const MAX_TRIES = 60;
     let tries = 0;
     let timer: ReturnType<typeof setTimeout>;
     let cancelled = false;
@@ -547,14 +553,16 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
       } catch {
         /* keep polling */
       }
-      if (++tries < 30 && !cancelled) timer = setTimeout(poll, 3000);
+      if (cancelled) return;
+      if (++tries < MAX_TRIES) timer = setTimeout(poll, 3000);
+      else setStatus("timeout");
     };
     void poll();
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [matchId]);
+  }, [matchId, retry]);
 
   async function save() {
     if (markdown == null) return;
@@ -588,7 +596,11 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
           <div>
             <div className="font-heading text-sm font-semibold">Tailored résumé</div>
             <div className="text-xs text-muted-foreground">
-              {status === "pending" ? "Tailoring in progress…" : "Editable — Save changes, then export PDF."}
+              {status === "pending"
+                ? "Tailoring in progress…"
+                : status === "timeout"
+                  ? "Still working — check again in a moment."
+                  : "Editable — Save changes, then export PDF."}
             </div>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
@@ -598,7 +610,29 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
         <div className="flex-1 overflow-auto p-4">
           {status === "pending" ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              Drafting & critiquing the résumé… this takes a few seconds.
+              Drafting &amp; critiquing the résumé… this can take up to a minute or two.
+            </div>
+          ) : status === "timeout" ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground">
+              <p>
+                Still tailoring — the draft → critique → revise pass can run a little long.
+                <br />
+                It keeps working in the background; check again in a moment.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  // Re-kick tailoring (idempotent — approve re-runs the graph in
+                  // the background) in case the first background pass failed, then
+                  // resume polling.
+                  setStatus("pending");
+                  void api.approveMatch(matchId).catch(() => {});
+                  setRetry((r) => r + 1);
+                }}
+              >
+                Regenerate &amp; check again
+              </Button>
             </div>
           ) : (
             <textarea
