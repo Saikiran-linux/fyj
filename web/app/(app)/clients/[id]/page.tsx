@@ -18,7 +18,11 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
+import { Pencil } from "lucide-react";
 import { api } from "@/lib/api";
+import { CandidateHeatmap } from "@/components/candidate-heatmap";
+import { CandidateAgenda, type AgendaItem } from "@/components/candidate-agenda";
+import { EditCandidateDialog } from "@/components/edit-candidate-dialog";
 import type { Client, ClientProfile, Match, ApplicationRow, ConsentStatus, StaffRole } from "@/lib/types";
 
 function consentTone(consent: ConsentStatus) {
@@ -47,6 +51,7 @@ export default function CandidateProfilePage() {
   const [busy, setBusy] = useState(false);
   const [matching, setMatching] = useState(false);
   const [resumeMatchId, setResumeMatchId] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
 
   const loadProfiles = () => api.listProfiles(id).then(setProfiles);
   const reloadMatches = () => api.listMatches({ candidateId: id }).then(setMatches).catch(() => {});
@@ -153,6 +158,20 @@ export default function CandidateProfilePage() {
     .sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime())
     .slice(0, 20);
 
+  // Heatmap = every dated pipeline signal for this candidate; agenda = the
+  // candidate's applications/placements as a time-ordered timeline.
+  const heatmapDates = [
+    ...(matches ?? []).map((m) => m.surfacedAt),
+    ...(apps ?? []).flatMap((a) => [a.appliedAt, a.updatedAt]),
+  ].filter((d): d is string => Boolean(d));
+  const agendaItems: AgendaItem[] = (apps ?? []).map((a) => ({
+    id: a.id,
+    date: a.appliedAt ?? a.updatedAt,
+    title: a.jobTitle ?? "Role",
+    company: a.companyName,
+    stage: a.status,
+  }));
+
   return (
     <>
       <Topbar title="Candidates" />
@@ -182,6 +201,11 @@ export default function CandidateProfilePage() {
             </div>
           </div>
           <div className="flex items-center gap-2 pb-1">
+            {client && (
+              <Button variant="outline" onClick={() => setEditing(true)} aria-label="Edit profile">
+                <Pencil className="mr-1.5 size-3.5" /> Edit profile
+              </Button>
+            )}
             {client && (
               <Button variant="outline" disabled={busy} onClick={toggleStatus}>
                 {client.status === "paused" ? "Resume" : "Pause"}
@@ -246,6 +270,10 @@ export default function CandidateProfilePage() {
 
           {/* Overview */}
           <TabsContent value="overview" className="pt-4">
+            <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <CandidateHeatmap dates={heatmapDates} />
+              <CandidateAgenda items={agendaItems} />
+            </div>
             <Card className="px-5">
               <dl className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
                 <Field label="Email" value={client?.email ?? "—"} />
@@ -349,6 +377,14 @@ export default function CandidateProfilePage() {
       </div>
       {resumeMatchId && (
         <TailoredResumeDrawer matchId={resumeMatchId} onClose={() => setResumeMatchId(null)} />
+      )}
+      {editing && client && (
+        <EditCandidateDialog
+          client={client}
+          profiles={profiles}
+          onClose={() => setEditing(false)}
+          onSaved={(c) => setClient(c)}
+        />
       )}
     </>
   );

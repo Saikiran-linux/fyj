@@ -849,9 +849,13 @@ export function updateTailoredResume(db: DB, who: Principal, matchId: string, ma
 
 // ── candidate + track updates (f-139 P3) ───────────────────────────────
 export interface UpdateClientInput {
+  fullName?: string;
+  email?: string | null;
+  phone?: string | null;
   status?: ClientStatus;
   headline?: string | null;
   consentStatus?: ConsentStatus;
+  notes?: string | null;
 }
 
 export function updateClient(db: DB, who: Principal, clientId: string, input: UpdateClientInput) {
@@ -859,9 +863,13 @@ export function updateClient(db: DB, who: Principal, clientId: string, input: Up
     const [row] = await tx
       .update(clients)
       .set({
+        ...(input.fullName !== undefined ? { fullName: input.fullName } : {}),
+        ...(input.email !== undefined ? { email: input.email } : {}),
+        ...(input.phone !== undefined ? { phone: input.phone } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.headline !== undefined ? { headline: input.headline } : {}),
         ...(input.consentStatus !== undefined ? { consentStatus: input.consentStatus } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
         updatedAt: new Date(),
       })
       .where(eq(clients.id, clientId))

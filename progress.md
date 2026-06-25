@@ -4,6 +4,32 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-25 — f-144: candidate Overview heatmap + agenda + edit-profile modal
+
+Enriched the candidate profile **Overview** tab and added full-detail editing.
+
+- The two requested `devl.dev` registry items are **mock showcase pages** (the year-heatmap fetches the
+  GitHub contributions API for a username; the agenda is static) and pull `@coss/*` deps + an
+  `AvatarImage`/`Skeleton` API this project doesn't have — so a verbatim `shadcn add` would drop in
+  disconnected demos. Instead I **adapted their visual language** into data-driven components:
+  - `web/components/candidate-heatmap.tsx` — GitHub-style 53-week grid (teal quartile scale, month/
+    weekday labels, legend, active-days + longest/current streak), built from a date→count map over
+    the candidate's `matches.surfacedAt` + applications `appliedAt`/`updatedAt`.
+  - `web/components/candidate-agenda.tsx` — tone-bar timeline grouped by day (lucide icons), from the
+    candidate's applications/placements.
+  - `web/components/edit-candidate-dialog.tsx` — centred modal (Esc + scroll-lock) editing
+    name/headline/email/phone/status/consent/notes via `api.updateClient`, plus a read-only
+    campaigns + résumé-text viewer.
+- **Backend:** `updateClient` (repo) + `PATCH /api/clients/:id` extended to accept
+  `fullName/email/phone/notes` (was status/headline/consent only); empty name rejected. No schema
+  migration — those columns already exist.
+- **Wiring:** Overview renders heatmap + agenda in a 2-col grid; an **Edit profile** (pencil) button
+  in the hero opens the modal; `lib/api.ts` `updateClient` input widened.
+- Gates green: `./init.sh` + web `next build` (`/clients/[id]` 15.6 kB). Backend field persistence
+  needs a Worker deploy; the UI ships on PR merge (Vercel).
+
+---
+
 ## 2026-06-25 — f-141: end-to-end candidate value loop (LangGraph intake / enrich / tailor)
 
 Delivered the product's core value loop: **upload résumé → AI extracts the candidate + targeting

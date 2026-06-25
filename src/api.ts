@@ -273,15 +273,22 @@ export function createApi() {
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
   });
 
-  // Update a candidate (status / headline / consent) — f-139 P3.
+  // Update a candidate — core details (name/email/phone/headline/notes) plus
+  // status / consent (f-139 P3, extended f-144 for the edit-profile modal).
   app.patch("/api/clients/:id", async (c) => {
     const p = c.get("principal");
     if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
     const body = (await c.req.json().catch(() => ({}))) as {
+      fullName?: string;
+      email?: string | null;
+      phone?: string | null;
       status?: string;
       headline?: string | null;
       consentStatus?: string;
+      notes?: string | null;
     };
+    if (body.fullName !== undefined && !body.fullName.trim())
+      return c.json({ error: "fullName cannot be empty" }, 400);
     if (body.status !== undefined && !clientStatus.enumValues.includes(body.status as repo.ClientStatus))
       return c.json({ error: "invalid status" }, 400);
     if (
@@ -290,9 +297,13 @@ export function createApi() {
     )
       return c.json({ error: "invalid consentStatus" }, 400);
     const row = await repo.updateClient(c.get("db"), p, c.req.param("id"), {
+      fullName: body.fullName?.trim(),
+      email: body.email,
+      phone: body.phone,
       status: body.status as repo.ClientStatus | undefined,
       headline: body.headline,
       consentStatus: body.consentStatus as repo.ConsentStatus | undefined,
+      notes: body.notes,
     });
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
   });
