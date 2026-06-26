@@ -10,6 +10,47 @@ export type Principal =
 export type ClientStatus = "active" | "paused" | "placed" | "archived";
 export type ConsentStatus = "active" | "pending" | "revoked";
 
+export type FeedbackSignal =
+  | "interested"
+  | "not_interested"
+  | "already_applied"
+  | "wrong_location"
+  | "comp_too_low"
+  | "seniority_off"
+  | "not_my_field"
+  | "other";
+
+export interface Feedback {
+  id: string;
+  clientId: string;
+  signal: FeedbackSignal;
+  rating: number | null;
+  note: string | null;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+export interface CandidateDocuments {
+  resumes: {
+    profileId: string;
+    label: string;
+    fileName: string;
+    hasFile: boolean;
+    hasText: boolean;
+    embeddedAt: string | null;
+    uploadedAt: string;
+  }[];
+  tailored: {
+    matchId: string;
+    model: string | null;
+    generatedAt: string;
+    jobId: string | null;
+    companyId: string | null;
+    jobTitle: string | null;
+    company: string | null;
+  }[];
+}
+
 export interface Client {
   id: string;
   orgId: string;

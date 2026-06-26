@@ -4,6 +4,33 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-26 — f-146: prompt caching + activity feedback panel + documents tab
+
+Three requested improvements.
+
+- **Prompt caching (where it pays off).** `src/graph/llm.ts` `anthropicText`/`anthropicJson` now take
+  cacheable segments (`Seg = string | {text, cache?}`) and emit `cache_control:{type:"ephemeral"}` on
+  flagged blocks; cache usage is logged when non-zero (verify via `wrangler tail`). **Tailoring** is the
+  real win: one `WRITER_SYSTEM` shared by draft+revise (both Sonnet) with a byte-stable cached prefix
+  (candidate+master+job) and the per-call TASK after the breakpoint, so `revise` reads the cache `draft`
+  wrote; `critique` (Haiku) caches job+master. **Enrichment** marks the candidate prefix cached
+  opportunistically (only triggers if it clears Haiku's 4096-token min — short résumés won't; harmless).
+  No beta header (caching is GA).
+- **Activity feedback panel.** `db/policies.sql` adds `feedback_staff_insert` (admin/operator,
+  `can_access_client`) alongside the client-insert policy — additive, still no update/delete so feedback
+  stays immutable. `repo.addStaffFeedback` + `listFeedback`; `POST`/`GET /api/clients/:id/feedback`; the
+  Activity tab gains a Feedback panel (signal select + note → log; lists prior feedback).
+- **Documents tab.** `repo.listDocuments` (master résumés from `client_profiles` + tailored from
+  `reports⋈campaign_matches`); `GET /api/clients/:id/documents` (hydrates tailored titles via `getJob`)
+  + `GET /api/clients/:id/profiles/:profileId/resume-file` (RLS-checked, streams the R2 object). Web
+  Documents tab: résumé cards (Open file) + tailored cards (open the existing résumé drawer).
+- **Gates green:** `./init.sh` + web `next build` (`/clients/[id]` 16.8 kB).
+- **To go live:** `wrangler deploy` (routes + caching); **re-apply `db/policies.sql` to Neon** for
+  `feedback_staff_insert` (staff feedback INSERT fails closed until applied — everything else works on
+  deploy alone); UI ships on PR merge (Vercel).
+
+---
+
 ## 2026-06-25 — f-144: candidate Overview heatmap + agenda + edit-profile modal
 
 Enriched the candidate profile **Overview** tab and added full-detail editing.

@@ -162,6 +162,17 @@
       ],
       "status": "not-started",
       "evidence": ""
+    },
+    {
+      "id": "f-146",
+      "name": "Prompt caching + activity feedback panel + documents tab",
+      "description": "Three improvements requested together: (1) Anthropic prompt caching where it pays off; (2) an operator activity-feedback panel on the candidate profile; (3) a Documents tab listing résumés + tailored résumés.",
+      "dependencies": [
+        "f-141",
+        "f-144"
+      ],
+      "status": "done",
+      "evidence": "PROMPT CACHING: src/graph/llm.ts anthropicText/anthropicJson now accept cacheable segments (Seg = string | {text,cache?}) → cache_control:{type:ephemeral} on flagged blocks; logs usage.cache_read/creation when non-zero so wrangler tail can confirm hits. tailor.ts: unified WRITER_SYSTEM for draft+revise (both Sonnet) with a byte-stable cached prefix (candidate+master+job; breakpoint on job) and the per-call TASK appended after it, so revise reads the cache draft wrote (cache is per-model+prefix; master résumé ~4k tokens > Sonnet 2048 min); critique (Haiku) caches job+master, draft varies after. enrich.ts: candidate prefix marked cached opportunistically (only caches if system+candidate >4096 Haiku min — short résumés won't, harmless; fan-out concurrency also limits reuse). No beta header (caching is GA). FEEDBACK PANEL (f-146): db/policies.sql adds feedback_staff_insert (admin/operator, can_access_client) alongside the client-insert policy — additive, still no update/delete so feedback stays immutable; repo addStaffFeedback + listFeedback; api POST/GET /api/clients/:id/feedback (POST staff non-viewer); web Activity tab gains a Feedback panel (signal Select + note → log; lists prior feedback with tone chips). DOCUMENTS TAB: repo listDocuments (master résumés from client_profiles + tailored résumés from reports⋈campaign_matches); api GET /api/clients/:id/documents (hydrates tailored job titles via getJob) + GET /api/clients/:id/profiles/:profileId/resume-file (RLS-checked getProfile → streams the R2 object); web Documents tab — résumé cards (Open file → R2 stream) + tailored cards (open the existing TailoredResumeDrawer by matchId). GATES GREEN: ./init.sh (Worker tsc + db:generate no-drift + web tsc) + web next build (/clients/[id] 16.8 kB). LIVE-VERIFIED (2026-06-26, deployed Worker version a29006e0; feedback_staff_insert applied to prod Neon via the @neondatabase/serverless driver — pg_policies now shows feedback_client_insert + feedback_select + feedback_staff_insert): admin POST /api/clients/:id/feedback → 201 and GET returns it; GET /api/clients/:id/documents → 1 résumé + 1 tailored (hydrated title); résumé-file route streams the R2 object (200, text/plain, content-disposition, 623 bytes). PROMPT CACHING confirmed via wrangler tail across two tailoring runs within the TTL: draft #1 logged {model:claude-sonnet-4-6, write:1171, read:0}, draft #2 logged {read:1171, write:0} — full cache read of the shared prefix. UI ships on PR merge (Vercel). SECURITY: the Neon owner connection string was shared in chat to apply the policy — ROTATE it."
     }
   ]
 }

@@ -83,10 +83,35 @@ export async function openaiJson<T>(
   throw new Error(`openaiJson failed: ${lastErr}`);
 }
 
-/** Anthropic Messages call returning raw text. */
+/**
+ * A prompt segment. Use a plain string for un-cached content, or an object with
+ * `cache: true` to drop a `cache_control: {type:"ephemeral"}` breakpoint after
+ * that block — everything up to and including it becomes a reusable prefix.
+ * Caching is a prefix match, so the cached blocks must be byte-identical AND
+ * come first; volatile content goes in later (un-cached) segments. Prompt
+ * caching is GA (no beta header); cache reads bill ~0.1x, writes ~1.25x, 5-min
+ * TTL. Note the per-model minimum cacheable prefix (Haiku 4.5 = 4096 tokens,
+ * Sonnet 4.6 = 2048) — below it the block silently won't cache.
+ */
+export type Seg = string | { text: string; cache?: boolean };
+
+type TextBlock = { type: "text"; text: string; cache_control?: { type: "ephemeral" } };
+
+function toContent(input: Seg | Seg[]): string | TextBlock[] {
+  if (typeof input === "string") return input;
+  const segs = Array.isArray(input) ? input : [input];
+  return segs.map((s) => {
+    const seg = typeof s === "string" ? { text: s, cache: false } : s;
+    const block: TextBlock = { type: "text", text: seg.text };
+    if (seg.cache) block.cache_control = { type: "ephemeral" };
+    return block;
+  });
+}
+
+/** Anthropic Messages call returning raw text. `system`/`user` accept cacheable segments. */
 export async function anthropicText(
   env: Env,
-  opts: { system: string; user: string; model: string; maxTokens: number; temperature?: number },
+  opts: { system: Seg | Seg[]; user: Seg | Seg[]; model: string; maxTokens: number; temperature?: number },
 ): Promise<string> {
   if (!env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not configured");
   let lastErr = "";
@@ -103,8 +128,8 @@ export async function anthropicText(
           model: opts.model,
           max_tokens: opts.maxTokens,
           temperature: opts.temperature ?? 0,
-          system: opts.system,
-          messages: [{ role: "user", content: opts.user }],
+          system: toContent(opts.system),
+          messages: [{ role: "user", content: toContent(opts.user) }],
         }),
       });
       if (!res.ok) {
@@ -112,7 +137,22 @@ export async function anthropicText(
         await sleep(400 * attempt);
         continue;
       }
-      const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
+      const data = (await res.json()) as {
+        content?: Array<{ type: string; text?: string }>;
+        usage?: { cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+      };
+      // Surface cache activity so a `wrangler tail` can confirm caching works.
+      const u = data.usage;
+      if (u && ((u.cache_read_input_tokens ?? 0) > 0 || (u.cache_creation_input_tokens ?? 0) > 0)) {
+        console.log(
+          JSON.stringify({
+            at: "anthropic.cache",
+            model: opts.model,
+            read: u.cache_read_input_tokens ?? 0,
+            write: u.cache_creation_input_tokens ?? 0,
+          }),
+        );
+      }
       const text = (data.content ?? [])
         .filter((b) => b.type === "text")
         .map((b) => b.text ?? "")
@@ -134,7 +174,7 @@ export async function anthropicText(
 /** Anthropic Messages call whose reply we parse as JSON. */
 export async function anthropicJson<T>(
   env: Env,
-  opts: { system: string; user: string; model: string; maxTokens: number },
+  opts: { system: Seg | Seg[]; user: Seg | Seg[]; model: string; maxTokens: number },
 ): Promise<T> {
   const text = await anthropicText(env, { ...opts, temperature: 0 });
   return extractJson<T>(text);

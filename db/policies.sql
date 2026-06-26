@@ -201,7 +201,7 @@ create policy reports_staff_write on public.reports for all
          and app.current_role() in ('admin','operator')
          and app.can_access_client(client_id));
 
--- ── feedback (staff + client read; CLIENT-INSERT-ONLY, immutable) ─────
+-- ── feedback (staff + client read; client OR staff insert, immutable) ─
 drop policy if exists feedback_select on public.feedback;
 create policy feedback_select on public.feedback for select
   using (org_id = app.current_org_id()
@@ -214,6 +214,18 @@ create policy feedback_client_insert on public.feedback for insert
     and client_id = app.current_client_id()
     and org_id = app.current_org_id()
     and app.can_view_as_client(client_id)
+  );
+
+-- Operators/admins may also log feedback on a candidate they can access (f-146
+-- activity feedback panel). Additive to the client-insert path; still no update/
+-- delete policy, so feedback stays insert-only/immutable for everyone.
+drop policy if exists feedback_staff_insert on public.feedback;
+create policy feedback_staff_insert on public.feedback for insert
+  with check (
+    app.current_principal() = 'staff'
+    and app.current_role() in ('admin', 'operator')
+    and org_id = app.current_org_id()
+    and app.can_access_client(client_id)
   );
 
 -- ── audit_log (admin read; staff insert) ──────────────────────────────
