@@ -113,11 +113,12 @@ function normalizeCandidate(c: ExtractedCandidate | null): ExtractedCandidate | 
 }
 
 function toFilters(candidate: ExtractedCandidate | null): JobFilters {
-  // NOTE: deliberately NO `families` — the index uses a controlled family
-  // vocabulary that our free-text roleFamilies don't match (it zeroes results).
-  // We rely on embedding similarity for role fit + these index-safe filters.
+  // NOTE: deliberately NO `families` OR `seniority` — the index uses controlled
+  // vocabularies for both that our free-text extracted values don't match, which
+  // zeroes the search (verified live: a "mid" seniority filter returned 0 hits
+  // where dropping it returned 25). Embedding similarity carries role + seniority
+  // fit; only genuinely index-safe structured filters go through here.
   const f: JobFilters = { targetOnly: true };
-  if (candidate?.seniority) f.seniority = [candidate.seniority];
   if (candidate?.workplace === "remote") f.remote = true;
   if (typeof candidate?.minComp === "number" && candidate.minComp > 0) f.compFloor = candidate.minComp;
   return f;

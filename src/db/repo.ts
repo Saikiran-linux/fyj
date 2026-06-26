@@ -725,12 +725,13 @@ export function applyResumeExtraction(
     if (Object.keys(patch).length > 1)
       await tx.update(clients).set(patch).where(eq(clients.id, clientId));
 
-    // INDEX-SAFE filters only (no `families`/`titles`/`locations` — the index's
-    // family vocab doesn't match our free-text values and zeroes results; those
-    // live in parsed_profile.candidate for display). Embedding does the role fit.
+    // INDEX-SAFE filters only (no `families`/`seniority`/`titles`/`locations` —
+    // the index uses controlled vocabularies for these that our free-text values
+    // don't match, which zeroes the search; verified live that a `seniority:["mid"]`
+    // filter returned 0 where dropping it returned 25). Those live in
+    // parsed_profile.candidate for display; the embedding carries role/seniority fit.
     const targetFilters = {
       targetOnly: true,
-      ...(ex.seniority ? { seniority: [ex.seniority] } : {}),
       ...(ex.workplace === "remote" ? { remote: true } : {}),
       ...(typeof ex.minComp === "number" && ex.minComp > 0 ? { compFloor: ex.minComp } : {}),
     };

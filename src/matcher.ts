@@ -50,9 +50,11 @@ export async function runCampaignMatch(
 
   // 2. Incremental search against the index — only jobs newer than last run.
   const embedding = JSON.parse(row.embedding) as number[];
-  // Drop `families` — the index's family vocab doesn't match our extracted
-  // values and zeroes results (see f-141 intake notes).
-  const { families: _drop, ...tf } = row.target_filters ?? {};
+  // Drop `families` + `seniority` — the index uses controlled vocabularies for
+  // both that our extracted values don't match, which zeroes results (see f-141
+  // intake notes + the f-147 live finding that a "mid" seniority filter returned
+  // 0). Guards profiles embedded before the fix; embedding carries that fit.
+  const { families: _df, seniority: _ds, ...tf } = row.target_filters ?? {};
   const filters: JobFilters = {
     ...tf,
     since: row.last_run_at ? new Date(row.last_run_at).toISOString() : undefined,

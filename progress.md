@@ -4,6 +4,31 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-26 — f-147 follow-up: LIVE root-cause of "no matches" = seniority filter
+
+Live-verified against the deployed Worker with an operator login the user provided, and found the
+**actual** cause of the "no matches" report (it was NOT just an empty candidate):
+
+- The one candidate (`025ad1b4…e413`, "Sai Vamshi K") **had an embedded résumé profile** ("AI
+  Engineer", embedded 06-25, skills extracted) yet **0 matches**. Triggering `POST
+  /api/profiles/:id/match` surfaced **0**.
+- Isolated it by relaxing `target_filters` via `PATCH /api/profiles/:id` + re-running match:
+  `{seniority:["mid"], targetOnly:…}` → **0**; drop seniority → **25**. So the **`seniority`
+  filter zeroes the index search** — the exact same controlled-vocabulary mismatch the code already
+  works around for `families`. (Remediated the live profile: cleared seniority → 25 real matches
+  now surfaced, e.g. Data Engineer @ tavus fit 85.)
+- **Fix (this change):** stop sending `seniority` to the index everywhere it carries role fit via
+  the embedding anyway — `intake.ts toFilters()` and `repo.applyResumeExtraction` no longer add it;
+  `matcher.ts` (cron) and the `POST /api/profiles/:id/match` route now **defensively drop**
+  `seniority` (alongside `families`) so profiles embedded before this fix also recover without a
+  re-upload. Seniority stays in `parsed_profile.candidate` for display.
+- Gates: worker `tsc` green. **Needs a `wrangler deploy`** to take effect for future uploads / the
+  cron; the live remediation above already fixed the current candidate. Also pending deploy: the
+  rest of f-147's backend (Experience extraction, `/extraction` + `/tailor` endpoints, index
+  timeouts). SECURITY: a Cloudflare API token was shared in chat to enable the deploy — **rotate it**.
+
+---
+
 ## 2026-06-26 — f-147: Overview Experience/Skills sections + match/tailor robustness
 
 Reworked the candidate **Overview** per live-console feedback (the

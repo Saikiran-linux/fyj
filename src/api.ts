@@ -554,9 +554,11 @@ export function createApi() {
 
     const campaignId = await repo.ensureCampaign(c.get("db"), p, profile.id, true);
     if (!campaignId) return c.json({ error: "no_campaign" }, 409);
-    // Drop `families` defensively — the index's family vocab doesn't match our
-    // values and zeroes results (also guards profiles embedded before this fix).
-    const { families: _drop, ...tf } = (profile.targetFilters as JobFilters) ?? {};
+    // Drop `families` + `seniority` defensively — the index uses controlled
+    // vocabularies for both that our extracted values don't match, zeroing the
+    // search (guards profiles embedded before the f-147 fix; verified live that a
+    // stored `seniority:["mid"]` filter returned 0). Embedding carries that fit.
+    const { families: _df, seniority: _ds, ...tf } = (profile.targetFilters as JobFilters) ?? {};
     const hits = await searchJobs(c.env, profile.embedding as number[], {
       ...tf,
       targetOnly: tf.targetOnly ?? true,
