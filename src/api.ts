@@ -124,8 +124,15 @@ async function enrichCampaignBackground(env: Env, who: Principal, campaignId: st
   }
 }
 
-/** Background (waitUntil) résumé tailoring for an approved match (own DB conn). */
-async function tailorMatchBackground(env: Env, who: Principal, matchId: string): Promise<void> {
+/**
+ * Résumé tailoring for an approved match (own DB conn). Runs in the QUEUE
+ * consumer (src/index.ts), not request `waitUntil`: a cold-cache draft→critique→
+ * revise chain takes longer than the post-response budget and Cloudflare cancels
+ * it before `saveTailoredResume`, leaving the résumé stuck "pending" (f-147 live
+ * finding). The queue gives it a full background invocation. Exported for the
+ * consumer; the request path only ENQUEUES (see `enqueueTailor`).
+ */
+export async function tailorMatchBackground(env: Env, who: Principal, matchId: string): Promise<void> {
   if (!hasAnthropic(env)) return;
   const { db, close } = createDb(env.HYPERDRIVE.connectionString);
   try {
@@ -659,9 +666,12 @@ export function createApi() {
     const matchId = c.req.param("id");
     const result = await repo.approveMatch(c.get("db"), p, matchId);
     if (!result) return c.json({ error: "not_found" }, 404);
-    // Tailor the master résumé to this job in the background (LangGraph tailor
-    // graph: draft → critique → revise). The editable Markdown lands on the match.
-    c.executionCtx.waitUntil(tailorMatchBackground(c.env, p, matchId));
+    // Tailor the master résumé to this job — ENQUEUED, not run in `waitUntil`,
+    // so the cold-cache draft→critique→revise chain runs in a full queue
+    // invocation instead of being cancelled by the short post-response budget
+    // (which left the résumé stuck "pending" — f-147 live finding).
+    if (hasAnthropic(c.env))
+      c.executionCtx.waitUntil(c.env.MATCH_QUEUE.send({ kind: "tailor", matchId, principal: p }));
     return c.json({ ...result, tailoring: hasAnthropic(c.env) });
   });
 
@@ -678,7 +688,7 @@ export function createApi() {
     if (!ctx.resumeText)
       return c.json({ tailoring: false, reason: "no_resume" as const });
     if (!hasAnthropic(c.env)) return c.json({ tailoring: false, reason: "no_ai" as const });
-    c.executionCtx.waitUntil(tailorMatchBackground(c.env, p, matchId));
+    c.executionCtx.waitUntil(c.env.MATCH_QUEUE.send({ kind: "tailor", matchId, principal: p }));
     return c.json({ tailoring: true });
   });
 
