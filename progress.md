@@ -4,6 +4,52 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-26 — f-147 follow-up #2: LIVE root-cause of "tailor does nothing" = waitUntil cancel
+
+Reproduced the "tailor résumé does nothing" report live and captured the cause with `wrangler tail`:
+
+- Approving a match returns `tailoring:true` (Anthropic key present) but the résumé stays `pending`
+  forever on a **cold** run. `wrangler tail` on a fresh match logged:
+  *"waitUntil() tasks did not complete within the allowed time after invocation end and have been
+  cancelled."* The tailoring (`c.executionCtx.waitUntil(tailorMatchBackground)`, a draft→critique→
+  revise Sonnet chain) outlasts Cloudflare's short post-response budget and is **killed before
+  `saveTailoredResume`** → stuck pending. A *warm-cache* re-kick finishes fast enough to slip in,
+  which is why a 2nd attempt works and the 1st "does nothing".
+- **Fix:** run tailoring in the **queue consumer** (full background invocation, generous budget),
+  not request `waitUntil`. Added a `TailorJob` queue message (`{kind:"tailor", matchId, principal}`);
+  `approve` + `POST /api/matches/:id/tailor` now `MATCH_QUEUE.send(...)` (enqueue is fast, fits
+  waitUntil) instead of running the chain inline; `src/index.ts` `queue()` discriminates `MatchJob`
+  vs `TailorJob` and runs `tailorMatchBackground` for the latter. `worker-configuration.d.ts` gains
+  `TailorJob`/`QueueJob`; `MATCH_QUEUE: Queue<QueueJob>`. Worker `tsc` green.
+- Needs a `wrangler deploy` to take effect (shares the existing `fyj-match` queue — no new infra).
+
+---
+
+## 2026-06-26 — f-147 follow-up: LIVE root-cause of "no matches" = seniority filter
+
+Live-verified against the deployed Worker with an operator login the user provided, and found the
+**actual** cause of the "no matches" report (it was NOT just an empty candidate):
+
+- The one candidate (`025ad1b4…e413`, "Sai Vamshi K") **had an embedded résumé profile** ("AI
+  Engineer", embedded 06-25, skills extracted) yet **0 matches**. Triggering `POST
+  /api/profiles/:id/match` surfaced **0**.
+- Isolated it by relaxing `target_filters` via `PATCH /api/profiles/:id` + re-running match:
+  `{seniority:["mid"], targetOnly:…}` → **0**; drop seniority → **25**. So the **`seniority`
+  filter zeroes the index search** — the exact same controlled-vocabulary mismatch the code already
+  works around for `families`. (Remediated the live profile: cleared seniority → 25 real matches
+  now surfaced, e.g. Data Engineer @ tavus fit 85.)
+- **Fix (this change):** stop sending `seniority` to the index everywhere it carries role fit via
+  the embedding anyway — `intake.ts toFilters()` and `repo.applyResumeExtraction` no longer add it;
+  `matcher.ts` (cron) and the `POST /api/profiles/:id/match` route now **defensively drop**
+  `seniority` (alongside `families`) so profiles embedded before this fix also recover without a
+  re-upload. Seniority stays in `parsed_profile.candidate` for display.
+- Gates: worker `tsc` green. **Needs a `wrangler deploy`** to take effect for future uploads / the
+  cron; the live remediation above already fixed the current candidate. Also pending deploy: the
+  rest of f-147's backend (Experience extraction, `/extraction` + `/tailor` endpoints, index
+  timeouts). SECURITY: a Cloudflare API token was shared in chat to enable the deploy — **rotate it**.
+
+---
+
 ## 2026-06-26 — f-147: Overview Experience/Skills sections + match/tailor robustness
 
 Reworked the candidate **Overview** per live-console feedback (the
