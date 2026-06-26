@@ -4,45 +4,64 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
-## 2026-06-26 — f-146: Overview Experience/Skills sections + match/tailor robustness
+## 2026-06-26 — f-147: Overview Experience/Skills sections + match/tailor robustness
 
-Reworked the candidate **Overview** per user feedback on the live console (screenshot: the
+Reworked the candidate **Overview** per live-console feedback (the
 Email/Phone/Status/Consent/Portal/Added grid wasted space; no matches showed; "tailor résumé" did
-nothing) — and hardened the two flagged paths.
+nothing) and hardened the two flagged paths. Merged on top of f-146 (documents tab / activity
+feedback / prompt caching) — both coexist.
 
 - **Overview UI (`web/app/(app)/clients/[id]/page.tsx`):** removed the detail `<Card>` grid
-  (redundant with the hero status/consent chips + edit-profile modal). Under the heatmap/agenda
-  now: an **Experience** section (work history) then a **Skills** section — both populated from the
-  candidate's primary résumé profile (`parsed_profile.candidate`) and **editable inline**
-  (Experience = add/remove role cards w/ title·company·period·summary; Skills = chip add/remove).
-  Empty states route to the Tracks tab to upload a résumé. Removed the now-unused `Field` component.
-- **Résumé extraction (`src/graph/intake.ts`):** `ExtractedCandidate` gains a structured
-  `experience: {title,company,period,summary}[]`; the gpt-4o-mini EXTRACT prompt asks for up to 6
-  recent roles; `normalizeCandidate()` guarantees arrays; extract maxTokens 700→1500. It rides the
-  existing `attachResume` persistence (`candidate: intake.candidate`) — no new write path on upload.
+  (redundant with the hero status/consent chips + edit-profile modal). Under the heatmap/agenda:
+  an **Experience** section (work history) then a **Skills** section — both from the candidate's
+  primary résumé profile (`parsed_profile.candidate`) and **editable inline** (Experience =
+  add/remove role cards w/ title·company·period·summary; Skills = chip add/remove). Empty states
+  route to the Tracks tab. Kept f-146's Documents tab + Activity Feedback panel.
+- **Résumé extraction (`src/graph/intake.ts`):** `ExtractedCandidate` gains structured
+  `experience[]`; gpt-4o-mini prompt asks for up to 6 recent roles; `normalizeCandidate()` guards
+  arrays; extract maxTokens 700→1500. Rides existing `attachResume` persistence.
 - **Persistence:** `repo.updateProfileCandidate` read-merges `experience`/`skills` into
-  `parsed_profile.candidate` (display-only, **not** re-embedded); `PATCH /api/profiles/:id/extraction`
-  (validates/caps); `api.updateProfileExtraction` on the web client. No schema migration (jsonb).
-- **Matches robustness (bug "no matches"):** `src/index-client.ts` `search_jobs`/`get_job` now use
-  an 8s `AbortController` timeout — a slow/unreachable index can no longer hang `GET /api/matches`
-  into an infinite browser "Loading…". The Matches tab distinguishes **load-failure (with Retry)**
-  from empty (the error was previously swallowed → looked like "no matches").
-- **Tailor robustness (bug "tailor does nothing"):** new `POST /api/matches/:id/tailor` kicks
-  (re-kicks) tailoring **without** changing the match action and returns a reason
-  (`no_resume`/`no_ai`) when it can't run. The drawer now kicks tailoring on open (so opening
-  "Tailored résumé" without Approve no longer polls on nothing) and renders a clear **blocked**
-  message instead of an endless spinner; the timeout "Regenerate" re-kicks via this endpoint.
-- **Verification:** gates green — worker `tsc`, web `tsc`, `next build` (`/clients/[id]` 15.6→17.8 kB).
-  Drove the **real** Next app in headless Chromium with `/api/**` intercepted by canned data:
-  Overview (old grid gone, Experience+Skills shown), Experience/Skills edit+save, Matches list with
-  fit/confidence chips, Approve→drawer pending→ready (editable MD + Save/Download), and the
-  no-résumé **blocked** drawer state. **Not** live-verified against the deployed Worker (no operator
-  login this session) — the backend changes (extraction endpoint, intake experience, index
-  timeouts, tailor endpoint) need a `wrangler deploy`; the UI ships on PR merge (Vercel).
-- **Likely root cause of the user's report:** the candidate in the screenshot had **0 activity** →
-  no résumé uploaded → nothing to match or tailor. The new empty-state guidance + the clearer
-  blocked/error states make that state legible instead of silent; the index timeout + Matches error
-  surface cover the "request hung / failed" variant.
+  `parsed_profile.candidate` (display-only, not re-embedded); `PATCH /api/profiles/:id/extraction`;
+  `api.updateProfileExtraction`. No schema migration.
+- **Matches robustness:** `src/index-client.ts` 8s `AbortController` timeout on `search_jobs`/
+  `get_job` so a slow index can't hang `GET /api/matches`; Matches tab now shows a load-failure
+  state (with Retry) distinct from empty (the error was previously swallowed → looked like "no
+  matches").
+- **Tailor robustness:** `POST /api/matches/:id/tailor` kicks (re-kicks) tailoring without changing
+  the match action and returns a reason (`no_resume`/`no_ai`); the drawer kicks on open and shows a
+  clear blocked message instead of an endless spinner.
+- **Verification:** gates green — worker `tsc`, web `tsc`, `next build`. Drove the real Next app in
+  headless Chromium (mocked `/api/**`): new Overview, Experience/Skills edit+save, Matches chips,
+  Approve→drawer pending→ready, no-résumé blocked state. Backend changes need a `wrangler deploy`;
+  UI ships on PR merge (Vercel). Likely root cause of the user's "no matches/tailor" report: the
+  candidate had **0 activity** → no résumé uploaded → nothing to match/tailor.
+
+---
+
+## 2026-06-26 — f-146: prompt caching + activity feedback panel + documents tab
+
+Three requested improvements.
+
+- **Prompt caching (where it pays off).** `src/graph/llm.ts` `anthropicText`/`anthropicJson` now take
+  cacheable segments (`Seg = string | {text, cache?}`) and emit `cache_control:{type:"ephemeral"}` on
+  flagged blocks; cache usage is logged when non-zero (verify via `wrangler tail`). **Tailoring** is the
+  real win: one `WRITER_SYSTEM` shared by draft+revise (both Sonnet) with a byte-stable cached prefix
+  (candidate+master+job) and the per-call TASK after the breakpoint, so `revise` reads the cache `draft`
+  wrote; `critique` (Haiku) caches job+master. **Enrichment** marks the candidate prefix cached
+  opportunistically (only triggers if it clears Haiku's 4096-token min — short résumés won't; harmless).
+  No beta header (caching is GA).
+- **Activity feedback panel.** `db/policies.sql` adds `feedback_staff_insert` (admin/operator,
+  `can_access_client`) alongside the client-insert policy — additive, still no update/delete so feedback
+  stays immutable. `repo.addStaffFeedback` + `listFeedback`; `POST`/`GET /api/clients/:id/feedback`; the
+  Activity tab gains a Feedback panel (signal select + note → log; lists prior feedback).
+- **Documents tab.** `repo.listDocuments` (master résumés from `client_profiles` + tailored from
+  `reports⋈campaign_matches`); `GET /api/clients/:id/documents` (hydrates tailored titles via `getJob`)
+  + `GET /api/clients/:id/profiles/:profileId/resume-file` (RLS-checked, streams the R2 object). Web
+  Documents tab: résumé cards (Open file) + tailored cards (open the existing résumé drawer).
+- **Gates green:** `./init.sh` + web `next build` (`/clients/[id]` 16.8 kB).
+- **To go live:** `wrangler deploy` (routes + caching); **re-apply `db/policies.sql` to Neon** for
+  `feedback_staff_insert` (staff feedback INSERT fails closed until applied — everything else works on
+  deploy alone); UI ships on PR merge (Vercel).
 
 ---
 

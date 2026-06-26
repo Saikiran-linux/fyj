@@ -10,7 +10,7 @@
  */
 import { StateGraph, START, END, Annotation } from "@langchain/langgraph/web";
 import type { JobDetail } from "../index-client";
-import { anthropicText, anthropicJson, HAIKU, SONNET } from "./llm";
+import { anthropicText, anthropicJson, HAIKU, SONNET, type Seg } from "./llm";
 
 const MAX_ITERATIONS = 2;
 
@@ -19,17 +19,20 @@ interface Critique {
   issues: string[];
 }
 
-const DRAFT_SYSTEM = `You are an expert résumé writer. Rewrite the candidate's master résumé as a tailored résumé for ONE specific job. Rules:
+// One writer system prompt shared by draft + revise (both Sonnet). Keeping it
+// identical — and putting the candidate/master/job context first as a single
+// cached prefix — lets the revise call read the cache the draft call wrote
+// (cache is per-model + prefix-match, so the Sonnet draft warms it for revise).
+const WRITER_SYSTEM = `You are an expert résumé writer. You write and revise a tailored résumé for ONE specific job from the candidate's master résumé. Rules:
 - Output GitHub-flavored Markdown only (no commentary, no code fences).
 - Reorder/emphasize real experience and skills to match the job; surface relevant keywords for ATS.
 - NEVER fabricate experience, employers, dates, or skills the master résumé doesn't support.
-- Keep it concise and senior-recruiter-ready: header, summary, skills, experience (bulleted, impact-first), education.`;
+- Keep it concise and senior-recruiter-ready: header, summary, skills, experience (bulleted, impact-first), education.
+- Follow the TASK at the end of the message.`;
 
 const CRITIQUE_SYSTEM = `You are a strict résumé reviewer. Compare a TAILORED résumé against the target JOB and the candidate's MASTER résumé. Reply with ONLY JSON:
 { "pass": boolean, "issues": string[] }
 Fail (pass=false) if: it fabricates anything not in the master, misses obvious job-critical keywords the candidate genuinely has, is poorly structured, or is too long. issues = up to 5 concrete, actionable fixes ([] when pass=true).`;
-
-const REVISE_SYSTEM = `You are an expert résumé writer revising a tailored résumé to fix specific reviewer issues. Output the full improved résumé as GitHub-flavored Markdown only. NEVER fabricate anything not supported by the master résumé.`;
 
 const TailorState = Annotation.Root({
   master: Annotation<string>(),
@@ -40,6 +43,18 @@ const TailorState = Annotation.Root({
   iterations: Annotation<number>(),
 });
 
+// Shared, byte-stable prefix for the writer (draft + revise): candidate + master
+// + job, with the cache breakpoint on the last stable block. The per-call TASK
+// (which varies) is appended AFTER the breakpoint so it never invalidates the cache.
+function writerUser(s: typeof TailorState.State, task: string): Seg[] {
+  return [
+    `CANDIDATE SUMMARY:\n${s.candidateSummary}`,
+    `MASTER RÉSUMÉ:\n${s.master}`,
+    { text: `TARGET JOB:\n${s.jobText}`, cache: true },
+    `TASK:\n${task}`,
+  ];
+}
+
 export function buildTailorGraph(env: Env) {
   // Node names must not collide with state-channel names (LangGraph rejects a
   // node called "draft"/"critique" when those are also state attributes), so the
@@ -47,8 +62,8 @@ export function buildTailorGraph(env: Env) {
   const graph = new StateGraph(TailorState)
     .addNode("write", async (s) => {
       const draft = await anthropicText(env, {
-        system: DRAFT_SYSTEM,
-        user: `TARGET JOB:\n${s.jobText}\n\nCANDIDATE SUMMARY:\n${s.candidateSummary}\n\nMASTER RÉSUMÉ:\n${s.master}`,
+        system: WRITER_SYSTEM,
+        user: writerUser(s, "Write the initial tailored résumé now."),
         model: SONNET,
         maxTokens: 4096,
         temperature: 0.2,
@@ -56,9 +71,15 @@ export function buildTailorGraph(env: Env) {
       return { draft };
     })
     .addNode("review", async (s) => {
+      // Stable prefix for critique = job + master (cache breakpoint); the draft
+      // under review varies between iterations, so it goes last, un-cached.
       const critique = await anthropicJson<Critique>(env, {
         system: CRITIQUE_SYSTEM,
-        user: `JOB:\n${s.jobText}\n\nMASTER RÉSUMÉ:\n${s.master}\n\nTAILORED RÉSUMÉ:\n${s.draft}`,
+        user: [
+          `TARGET JOB:\n${s.jobText}`,
+          { text: `MASTER RÉSUMÉ:\n${s.master}`, cache: true },
+          `TAILORED RÉSUMÉ TO REVIEW:\n${s.draft}`,
+        ],
         model: HAIKU,
         maxTokens: 700,
       });
@@ -66,8 +87,11 @@ export function buildTailorGraph(env: Env) {
     })
     .addNode("revise", async (s) => {
       const draft = await anthropicText(env, {
-        system: REVISE_SYSTEM,
-        user: `TARGET JOB:\n${s.jobText}\n\nMASTER RÉSUMÉ:\n${s.master}\n\nCURRENT DRAFT:\n${s.draft}\n\nREVIEWER ISSUES TO FIX:\n- ${(s.critique?.issues ?? []).join("\n- ")}`,
+        system: WRITER_SYSTEM,
+        user: writerUser(
+          s,
+          `Revise the current draft to fix these reviewer issues, then output the full improved résumé:\n- ${(s.critique?.issues ?? []).join("\n- ")}\n\nCURRENT DRAFT:\n${s.draft}`,
+        ),
         model: SONNET,
         maxTokens: 4096,
         temperature: 0.2,

@@ -295,6 +295,45 @@ export function submitFeedback(db: DB, who: Principal, input: FeedbackInput) {
   });
 }
 
+// Staff-logged feedback on a candidate (f-146). Mirrors submitFeedback but for
+// the staff-insert RLS path: clientId is explicit (not the caller's own), and
+// org/createdBy come from the verified staff Principal.
+export function addStaffFeedback(
+  db: DB,
+  who: Principal,
+  clientId: string,
+  input: FeedbackInput,
+) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .insert(feedback)
+      .values({
+        orgId: who.orgId,
+        clientId,
+        campaignId: input.campaignId ?? null,
+        jobId: input.jobId ?? null,
+        companyId: input.companyId ?? null,
+        placementId: input.placementId ?? null,
+        signal: input.signal,
+        rating: input.rating ?? null,
+        note: input.note ?? null,
+        createdBy: who.userId,
+      })
+      .returning();
+    return row ?? null;
+  });
+}
+
+export function listFeedback(db: DB, who: Principal, clientId: string) {
+  return withTenant(db, who, (tx) =>
+    tx
+      .select()
+      .from(feedback)
+      .where(eq(feedback.clientId, clientId))
+      .orderBy(desc(feedback.createdAt)),
+  );
+}
+
 // ── dashboard analytics (f-139) ────────────────────────────────────────
 // Org-wide rollups for the operator dashboard. The heavy lifting is in the
 // org-scoped SECURITY DEFINER functions in db/policies.sql (they span every
@@ -777,6 +816,54 @@ export function getTailoringContext(db: DB, who: Principal, matchId: string) {
       .where(eq(campaignMatches.id, matchId))
       .limit(1);
     return row ?? null;
+  });
+}
+
+// All documents for a candidate (f-146 Documents tab): the uploaded master
+// résumé per campaign/profile, plus every generated tailored résumé (one per
+// approved match). Tailored rows carry jobId/companyId for the caller to
+// hydrate a title via the index; their `matchId` opens the existing résumé route.
+export function listDocuments(db: DB, who: Principal, clientId: string) {
+  return withTenant(db, who, async (tx) => {
+    const profileRows = await tx
+      .select({
+        profileId: clientProfiles.id,
+        label: clientProfiles.label,
+        storagePath: clientProfiles.resumeStoragePath,
+        resumeText: clientProfiles.resumeText,
+        embeddedAt: clientProfiles.embeddedAt,
+        createdAt: clientProfiles.createdAt,
+      })
+      .from(clientProfiles)
+      .where(eq(clientProfiles.clientId, clientId))
+      .orderBy(desc(clientProfiles.createdAt));
+
+    const resumes = profileRows
+      .filter((r) => r.storagePath || r.resumeText)
+      .map((r) => ({
+        profileId: r.profileId,
+        label: r.label,
+        fileName: r.storagePath ? (r.storagePath.split("/").pop() ?? "résumé") : "résumé (text)",
+        hasFile: Boolean(r.storagePath),
+        hasText: Boolean(r.resumeText),
+        embeddedAt: r.embeddedAt,
+        uploadedAt: r.embeddedAt ?? r.createdAt,
+      }));
+
+    const tailored = await tx
+      .select({
+        matchId: reports.campaignMatchId,
+        model: reports.model,
+        generatedAt: reports.generatedAt,
+        jobId: campaignMatches.jobId,
+        companyId: campaignMatches.companyId,
+      })
+      .from(reports)
+      .innerJoin(campaignMatches, eq(campaignMatches.id, reports.campaignMatchId))
+      .where(eq(reports.clientId, clientId))
+      .orderBy(desc(reports.generatedAt));
+
+    return { resumes, tailored };
   });
 }
 
