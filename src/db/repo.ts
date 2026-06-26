@@ -1020,6 +1020,50 @@ export function updateProfile(
   });
 }
 
+// Editable Experience/Skills sections on the Overview (f-146). These live in the
+// profile's parsed_profile.candidate jsonb (populated by the résumé intake graph);
+// operators can correct them by hand. We read-merge so we never clobber the rest of
+// parsed_profile (summary/email/embedding inputs). Display-only — does NOT re-embed.
+export interface ProfileExtractionPatch {
+  experience?: Array<{
+    title: string | null;
+    company: string | null;
+    period: string | null;
+    summary: string | null;
+  }>;
+  skills?: string[];
+}
+
+export function updateProfileCandidate(
+  db: DB,
+  who: Principal,
+  profileId: string,
+  patch: ProfileExtractionPatch,
+) {
+  return withTenant(db, who, async (tx) => {
+    const [current] = await tx
+      .select({ parsedProfile: clientProfiles.parsedProfile })
+      .from(clientProfiles)
+      .where(eq(clientProfiles.id, profileId))
+      .limit(1);
+    if (!current) return null;
+    const parsed = (current.parsedProfile ?? {}) as Record<string, unknown>;
+    const candidate = (parsed.candidate ?? {}) as Record<string, unknown>;
+    const nextCandidate = {
+      ...candidate,
+      ...(patch.experience !== undefined ? { experience: patch.experience } : {}),
+      ...(patch.skills !== undefined ? { skills: patch.skills } : {}),
+    };
+    const [row] = await tx
+      .update(clientProfiles)
+      .set({ parsedProfile: { ...parsed, candidate: nextCandidate }, updatedAt: new Date() })
+      .where(eq(clientProfiles.id, profileId))
+      .returning();
+    if (row) await audit(tx, who, "profile.extraction.edit", "client_profile", profileId, {});
+    return row ?? null;
+  });
+}
+
 // ── calendar (f-139 P4) ────────────────────────────────────────────────
 // Schedule events derived from placements (no separate table): a placement's
 // stage maps to an event kind, dated by stage_changed_at ?? applied_at ??

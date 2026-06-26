@@ -4,6 +4,40 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-26 — f-147: Overview Experience/Skills sections + match/tailor robustness
+
+Reworked the candidate **Overview** per live-console feedback (the
+Email/Phone/Status/Consent/Portal/Added grid wasted space; no matches showed; "tailor résumé" did
+nothing) and hardened the two flagged paths. Merged on top of f-146 (documents tab / activity
+feedback / prompt caching) — both coexist.
+
+- **Overview UI (`web/app/(app)/clients/[id]/page.tsx`):** removed the detail `<Card>` grid
+  (redundant with the hero status/consent chips + edit-profile modal). Under the heatmap/agenda:
+  an **Experience** section (work history) then a **Skills** section — both from the candidate's
+  primary résumé profile (`parsed_profile.candidate`) and **editable inline** (Experience =
+  add/remove role cards w/ title·company·period·summary; Skills = chip add/remove). Empty states
+  route to the Tracks tab. Kept f-146's Documents tab + Activity Feedback panel.
+- **Résumé extraction (`src/graph/intake.ts`):** `ExtractedCandidate` gains structured
+  `experience[]`; gpt-4o-mini prompt asks for up to 6 recent roles; `normalizeCandidate()` guards
+  arrays; extract maxTokens 700→1500. Rides existing `attachResume` persistence.
+- **Persistence:** `repo.updateProfileCandidate` read-merges `experience`/`skills` into
+  `parsed_profile.candidate` (display-only, not re-embedded); `PATCH /api/profiles/:id/extraction`;
+  `api.updateProfileExtraction`. No schema migration.
+- **Matches robustness:** `src/index-client.ts` 8s `AbortController` timeout on `search_jobs`/
+  `get_job` so a slow index can't hang `GET /api/matches`; Matches tab now shows a load-failure
+  state (with Retry) distinct from empty (the error was previously swallowed → looked like "no
+  matches").
+- **Tailor robustness:** `POST /api/matches/:id/tailor` kicks (re-kicks) tailoring without changing
+  the match action and returns a reason (`no_resume`/`no_ai`); the drawer kicks on open and shows a
+  clear blocked message instead of an endless spinner.
+- **Verification:** gates green — worker `tsc`, web `tsc`, `next build`. Drove the real Next app in
+  headless Chromium (mocked `/api/**`): new Overview, Experience/Skills edit+save, Matches chips,
+  Approve→drawer pending→ready, no-résumé blocked state. Backend changes need a `wrangler deploy`;
+  UI ships on PR merge (Vercel). Likely root cause of the user's "no matches/tailor" report: the
+  candidate had **0 activity** → no résumé uploaded → nothing to match/tailor.
+
+---
+
 ## 2026-06-26 — f-146: prompt caching + activity feedback panel + documents tab
 
 Three requested improvements.
