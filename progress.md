@@ -4,6 +4,48 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-26 — f-146: Overview Experience/Skills sections + match/tailor robustness
+
+Reworked the candidate **Overview** per user feedback on the live console (screenshot: the
+Email/Phone/Status/Consent/Portal/Added grid wasted space; no matches showed; "tailor résumé" did
+nothing) — and hardened the two flagged paths.
+
+- **Overview UI (`web/app/(app)/clients/[id]/page.tsx`):** removed the detail `<Card>` grid
+  (redundant with the hero status/consent chips + edit-profile modal). Under the heatmap/agenda
+  now: an **Experience** section (work history) then a **Skills** section — both populated from the
+  candidate's primary résumé profile (`parsed_profile.candidate`) and **editable inline**
+  (Experience = add/remove role cards w/ title·company·period·summary; Skills = chip add/remove).
+  Empty states route to the Tracks tab to upload a résumé. Removed the now-unused `Field` component.
+- **Résumé extraction (`src/graph/intake.ts`):** `ExtractedCandidate` gains a structured
+  `experience: {title,company,period,summary}[]`; the gpt-4o-mini EXTRACT prompt asks for up to 6
+  recent roles; `normalizeCandidate()` guarantees arrays; extract maxTokens 700→1500. It rides the
+  existing `attachResume` persistence (`candidate: intake.candidate`) — no new write path on upload.
+- **Persistence:** `repo.updateProfileCandidate` read-merges `experience`/`skills` into
+  `parsed_profile.candidate` (display-only, **not** re-embedded); `PATCH /api/profiles/:id/extraction`
+  (validates/caps); `api.updateProfileExtraction` on the web client. No schema migration (jsonb).
+- **Matches robustness (bug "no matches"):** `src/index-client.ts` `search_jobs`/`get_job` now use
+  an 8s `AbortController` timeout — a slow/unreachable index can no longer hang `GET /api/matches`
+  into an infinite browser "Loading…". The Matches tab distinguishes **load-failure (with Retry)**
+  from empty (the error was previously swallowed → looked like "no matches").
+- **Tailor robustness (bug "tailor does nothing"):** new `POST /api/matches/:id/tailor` kicks
+  (re-kicks) tailoring **without** changing the match action and returns a reason
+  (`no_resume`/`no_ai`) when it can't run. The drawer now kicks tailoring on open (so opening
+  "Tailored résumé" without Approve no longer polls on nothing) and renders a clear **blocked**
+  message instead of an endless spinner; the timeout "Regenerate" re-kicks via this endpoint.
+- **Verification:** gates green — worker `tsc`, web `tsc`, `next build` (`/clients/[id]` 15.6→17.8 kB).
+  Drove the **real** Next app in headless Chromium with `/api/**` intercepted by canned data:
+  Overview (old grid gone, Experience+Skills shown), Experience/Skills edit+save, Matches list with
+  fit/confidence chips, Approve→drawer pending→ready (editable MD + Save/Download), and the
+  no-résumé **blocked** drawer state. **Not** live-verified against the deployed Worker (no operator
+  login this session) — the backend changes (extraction endpoint, intake experience, index
+  timeouts, tailor endpoint) need a `wrangler deploy`; the UI ships on PR merge (Vercel).
+- **Likely root cause of the user's report:** the candidate in the screenshot had **0 activity** →
+  no résumé uploaded → nothing to match or tailor. The new empty-state guidance + the clearer
+  blocked/error states make that state legible instead of silent; the index timeout + Matches error
+  surface cover the "request hung / failed" variant.
+
+---
+
 ## 2026-06-25 — f-144: candidate Overview heatmap + agenda + edit-profile modal
 
 Enriched the candidate profile **Overview** tab and added full-detail editing.

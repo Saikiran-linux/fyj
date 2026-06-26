@@ -17,12 +17,21 @@ import { embedRaw } from "../embeddings";
 import { searchJobs, type JobFilters, type JobMatch } from "../index-client";
 import { openaiJson } from "./llm";
 
+/** One role from the candidate's work history (for the editable Experience section). */
+export interface ExperienceEntry {
+  title: string | null;
+  company: string | null;
+  period: string | null; // free-text dates, e.g. "2021 – Present"
+  summary: string | null; // 1-2 line impact summary
+}
+
 export interface ExtractedCandidate {
   fullName: string | null;
   headline: string | null;
   location: string | null;
   seniority: string | null;
   skills: string[];
+  experience: ExperienceEntry[];
   roleFamilies: string[];
   minComp: number | null;
   workplace: string | null; // remote | hybrid | onsite
@@ -52,6 +61,14 @@ const EXTRACT_SYSTEM = `You read a candidate's RESUME and extract a structured p
   "location": string|null,            // city/region if stated
   "seniority": string|null,           // one of: intern, junior, mid, senior, staff, principal, lead, manager, director, vp
   "skills": string[],                 // 8-15 strongest concrete skills/technologies
+  "experience": [                     // up to 6 most recent roles, most recent first ([] if none)
+    {
+      "title": string|null,           // job title held
+      "company": string|null,         // employer
+      "period": string|null,          // dates as written, e.g. "Jan 2021 – Present"
+      "summary": string|null          // 1-2 sentences on scope + a concrete impact
+    }
+  ],
   "roleFamilies": string[],           // 1-3 role families, e.g. ["Backend", "Platform"]
   "minComp": number|null,             // target base comp in USD as a number if stated, else null
   "workplace": string|null,           // remote | hybrid | onsite preference if derivable
@@ -72,6 +89,29 @@ const IntakeState = Annotation.Root({
   matches: Annotation<SurfacedMatch[]>(),
 });
 
+/** Defensive shaping so the UI can always rely on arrays (the model may omit keys). */
+function normalizeCandidate(c: ExtractedCandidate | null): ExtractedCandidate | null {
+  if (!c) return c;
+  const experience = Array.isArray(c.experience)
+    ? c.experience
+        .filter((e) => e && (e.title || e.company || e.summary))
+        .slice(0, 8)
+        .map((e) => ({
+          title: e.title ?? null,
+          company: e.company ?? null,
+          period: e.period ?? null,
+          summary: e.summary ?? null,
+        }))
+    : [];
+  return {
+    ...c,
+    skills: Array.isArray(c.skills) ? c.skills : [],
+    roleFamilies: Array.isArray(c.roleFamilies) ? c.roleFamilies : [],
+    targetTitles: Array.isArray(c.targetTitles) ? c.targetTitles : [],
+    experience,
+  };
+}
+
 function toFilters(candidate: ExtractedCandidate | null): JobFilters {
   // NOTE: deliberately NO `families` — the index uses a controlled family
   // vocabulary that our free-text roleFamilies don't match (it zeroes results).
@@ -90,9 +130,9 @@ export function buildIntakeGraph(env: Env, hydrate = 25) {
         const candidate = await openaiJson<ExtractedCandidate>(env, {
           system: EXTRACT_SYSTEM,
           user: s.resumeText.slice(0, 12_000),
-          maxTokens: 700,
+          maxTokens: 1500, // room for the experience array
         });
-        return { candidate, filters: toFilters(candidate) };
+        return { candidate: normalizeCandidate(candidate), filters: toFilters(candidate) };
       } catch {
         return { attempts: (s.attempts ?? 0) + 1 };
       }

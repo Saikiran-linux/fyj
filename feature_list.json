@@ -162,6 +162,17 @@
       ],
       "status": "not-started",
       "evidence": ""
+    },
+    {
+      "id": "f-146",
+      "name": "Candidate Overview — editable Experience & Skills sections + match/tailor robustness",
+      "description": "Replace the Email/Phone/Status/Consent/Portal/Added detail grid (redundant with the hero status/consent chips + the edit-profile modal, and a big space sink) with résumé-driven, operator-editable Experience and Skills sections under the Overview heatmap. Résumé intake (gpt-4o-mini, src/graph/intake.ts) now also extracts a structured work history (title/company/period/summary) into parsed_profile.candidate.experience; both sections render from the candidate's primary (embedded, else most recent) profile and are editable inline, persisting via PATCH /api/profiles/:id/extraction (read-merged into parsed_profile.candidate, display-only — NOT re-embedded). Empty states guide the operator to upload a résumé. Plus robustness on the two paths the user flagged: search_jobs/get_job now have an 8s timeout so a slow index can't hang GET /api/matches into an infinite 'Loading…'; the Matches tab now distinguishes a load failure (with Retry) from genuinely-empty; and the tailored-résumé drawer kicks tailoring on open via POST /api/matches/:id/tailor (so opening it without Approve no longer spins on nothing) and shows a precise 'no master résumé' / 'AI not configured' message instead of an endless spinner.",
+      "dependencies": [
+        "f-141",
+        "f-144"
+      ],
+      "status": "done",
+      "evidence": "Gates green: worker `tsc --noEmit`, web `tsc --noEmit`, web `next build` (/clients/[id] 15.6→17.8 kB). UI driven in headless Chromium (Playwright, /api/** intercepted with canned data over the real Next app): (1) Overview renders the new Experience (3 roles) + Skills sections and the old detail grid is gone; (2) Experience + Skills edit modes add/remove/save via the extraction endpoint; (3) Matches tab renders matches with fit/confidence chips; (4) Approve → tailored-résumé drawer goes pending→ready with editable Markdown + Save/Download; (5) opening the drawer for a candidate with no master résumé shows the clear blocked message instead of spinning. Live e2e against the deployed Worker NOT run this session (no operator login available); backend changes (extraction endpoint, intake experience, index timeouts, tailor endpoint) require a Worker deploy to take effect on the live URL."
     }
   ]
 }

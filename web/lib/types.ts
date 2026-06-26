@@ -38,6 +38,28 @@ export interface ClientProfile {
   createdAt: string;
 }
 
+/** One work-history role extracted from a résumé (editable on the Overview). */
+export interface ExperienceEntry {
+  title: string | null;
+  company: string | null;
+  period: string | null;
+  summary: string | null;
+}
+
+/** The résumé-extracted candidate fields stored on `ClientProfile.parsedProfile.candidate`. */
+export interface CandidateExtraction {
+  fullName?: string | null;
+  headline?: string | null;
+  location?: string | null;
+  seniority?: string | null;
+  skills?: string[];
+  experience?: ExperienceEntry[];
+  roleFamilies?: string[];
+  minComp?: number | null;
+  workplace?: string | null;
+  targetTitles?: string[];
+}
+
 /** A ranked job from the index, hydrated for display (search routes). */
 export interface JobHit {
   jobId: string;

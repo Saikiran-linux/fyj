@@ -60,13 +60,28 @@ function headers(env: Env): HeadersInit {
   };
 }
 
+// Bound every index round-trip. Without this a slow/unreachable index makes the
+// hydration in GET /api/matches hang with no error — the browser then sees the
+// matches request stall and the tab spins on "Loading…" forever (looks like
+// "no matches"). A timeout turns that into a fast, catchable failure so the
+// match still renders (with title/company unhydrated) instead of disappearing.
+async function fetchWithTimeout(url: string, init: RequestInit, ms = 8_000): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Vector + filter search against the index. Returns ranked job refs. */
 export async function searchJobs(
   env: Env,
   embedding: number[],
   filters: JobFilters,
 ): Promise<JobMatch[]> {
-  const res = await fetch(`${env.FYJ_INDEX_URL}/rest/v1/rpc/search_jobs`, {
+  const res = await fetchWithTimeout(`${env.FYJ_INDEX_URL}/rest/v1/rpc/search_jobs`, {
     method: "POST",
     headers: headers(env),
     body: JSON.stringify({ query_vec: embedding, filters }),
@@ -88,7 +103,7 @@ export async function getJob(
   const cached = await env.JOB_CACHE.get<JobDetail>(cacheKey, "json");
   if (cached) return cached;
 
-  const res = await fetch(`${env.FYJ_INDEX_URL}/rest/v1/rpc/get_job`, {
+  const res = await fetchWithTimeout(`${env.FYJ_INDEX_URL}/rest/v1/rpc/get_job`, {
     method: "POST",
     headers: headers(env),
     body: JSON.stringify({ p_job_id: jobId, p_company_id: companyId }),

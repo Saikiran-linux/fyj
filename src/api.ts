@@ -372,6 +372,38 @@ export function createApi() {
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
   });
 
+  // Save operator edits to the résumé-extracted Experience / Skills sections
+  // (f-146). Display-only — merged into parsed_profile.candidate; not re-embedded.
+  app.patch("/api/profiles/:id/extraction", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      experience?: unknown;
+      skills?: unknown;
+    };
+    const patch: repo.ProfileExtractionPatch = {};
+    if (body.skills !== undefined) {
+      if (!Array.isArray(body.skills)) return c.json({ error: "skills must be an array" }, 400);
+      patch.skills = body.skills.map((s) => String(s).trim()).filter(Boolean).slice(0, 40);
+    }
+    if (body.experience !== undefined) {
+      if (!Array.isArray(body.experience))
+        return c.json({ error: "experience must be an array" }, 400);
+      patch.experience = body.experience.slice(0, 20).map((e) => {
+        const o = (e ?? {}) as Record<string, unknown>;
+        const str = (v: unknown) => {
+          const t = v == null ? "" : String(v).trim();
+          return t ? t.slice(0, 600) : null;
+        };
+        return { title: str(o.title), company: str(o.company), period: str(o.period), summary: str(o.summary) };
+      });
+    }
+    if (patch.experience === undefined && patch.skills === undefined)
+      return c.json({ error: "nothing to update" }, 400);
+    const row = await repo.updateProfileCandidate(c.get("db"), p, c.req.param("id"), patch);
+    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
   // ── profiles ─────────────────────────────────────────────────────────
   app.get("/api/clients/:id/profiles", async (c) =>
     c.json(await repo.listProfiles(c.get("db"), c.get("principal"), c.req.param("id"))),
@@ -577,6 +609,23 @@ export function createApi() {
     // graph: draft → critique → revise). The editable Markdown lands on the match.
     c.executionCtx.waitUntil(tailorMatchBackground(c.env, p, matchId));
     return c.json({ ...result, tailoring: hasAnthropic(c.env) });
+  });
+
+  // Kick (or re-kick) résumé tailoring for a match WITHOUT changing its action —
+  // used when the operator opens the tailored-résumé drawer directly. Returns a
+  // precise reason when tailoring can't run so the UI shows a message instead of
+  // spinning forever (the silent-no-op that made "Tailored résumé" look broken).
+  app.post("/api/matches/:id/tailor", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const matchId = c.req.param("id");
+    const ctx = await repo.getTailoringContext(c.get("db"), p, matchId);
+    if (!ctx) return c.json({ error: "not_found" }, 404);
+    if (!ctx.resumeText)
+      return c.json({ tailoring: false, reason: "no_resume" as const });
+    if (!hasAnthropic(c.env)) return c.json({ tailoring: false, reason: "no_ai" as const });
+    c.executionCtx.waitUntil(tailorMatchBackground(c.env, p, matchId));
+    return c.json({ tailoring: true });
   });
 
   // Tailored résumé (Markdown) for an approved match — read + operator edits.
