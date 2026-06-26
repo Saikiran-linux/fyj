@@ -19,6 +19,9 @@ import type {
   ClientStatus,
   ConsentStatus,
   CalendarEvent,
+  Feedback,
+  FeedbackSignal,
+  CandidateDocuments,
 } from "./types";
 
 /**
@@ -109,6 +112,24 @@ export const api = {
     req<{ ok: true; id: string }>(`/api/clients/${id}`, { method: "DELETE" }),
   listClientApplications: (clientId: string) =>
     req<ApplicationRow[]>(`/api/clients/${clientId}/applications`),
+
+  // Candidate feedback (f-146) — operators log signals/notes; client portal also inserts.
+  listFeedback: (clientId: string) => req<Feedback[]>(`/api/clients/${clientId}/feedback`),
+  addFeedback: (
+    clientId: string,
+    input: { signal: FeedbackSignal; note?: string | null; rating?: number | null },
+  ) =>
+    req<Feedback>(`/api/clients/${clientId}/feedback`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  // Documents (f-146) — résumés + generated tailored résumés for a candidate.
+  listDocuments: (clientId: string) => req<CandidateDocuments>(`/api/clients/${clientId}/documents`),
+  // Original uploaded résumé file (R2). A plain link/navigation; the session
+  // cookie rides along, so use it as an <a href> rather than a fetch.
+  resumeFileUrl: (clientId: string, profileId: string) =>
+    `${API_URL}/api/clients/${clientId}/profiles/${profileId}/resume-file`,
 
   listProfiles: (clientId: string) =>
     req<ClientProfile[]>(`/api/clients/${clientId}/profiles`),

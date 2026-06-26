@@ -341,6 +341,58 @@ export function createApi() {
     );
   });
 
+  // ── candidate feedback (f-146 activity panel) ────────────────────────
+  app.get("/api/clients/:id/feedback", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    return c.json(await repo.listFeedback(c.get("db"), p, c.req.param("id")));
+  });
+
+  app.post("/api/clients/:id/feedback", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as Partial<repo.FeedbackInput>;
+    const signal = body.signal as repo.FeedbackSignal | undefined;
+    if (!signal || !feedbackSignal.enumValues.includes(signal))
+      return c.json({ error: "valid signal required" }, 400);
+    const row = await repo.addStaffFeedback(c.get("db"), p, c.req.param("id"), { ...body, signal });
+    return row ? c.json(row, 201) : c.json({ error: "not_found" }, 404);
+  });
+
+  // ── documents (f-146): résumés + generated tailored résumés ──────────
+  app.get("/api/clients/:id/documents", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const docs = await repo.listDocuments(c.get("db"), p, c.req.param("id"));
+    // Hydrate the tailored-résumé job titles from the index (KV-cached), same as /api/matches.
+    const tailored = await Promise.all(
+      docs.tailored.map(async (t) => {
+        const job = t.jobId && t.companyId ? await getJob(c.env, t.jobId, t.companyId).catch(() => null) : null;
+        return { ...t, jobTitle: job?.title ?? null, company: job?.company ?? null };
+      }),
+    );
+    return c.json({ resumes: docs.resumes, tailored });
+  });
+
+  // Stream the original uploaded résumé file from R2. RLS-checked: getProfile
+  // only resolves if this staff can access the profile's candidate.
+  app.get("/api/clients/:id/profiles/:profileId/resume-file", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const profile = await repo.getProfile(c.get("db"), p, c.req.param("profileId"));
+    if (!profile || profile.clientId !== c.req.param("id") || !profile.resumeStoragePath)
+      return c.json({ error: "not_found" }, 404);
+    const obj = await c.env.RESUMES.get(profile.resumeStoragePath);
+    if (!obj) return c.json({ error: "not_found" }, 404);
+    const fileName = profile.resumeStoragePath.split("/").pop() ?? "resume";
+    return new Response(obj.body, {
+      headers: {
+        "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream",
+        "content-disposition": `inline; filename="${fileName.replace(/"/g, "")}"`,
+      },
+    });
+  });
+
   // Update a track/profile (autopilot, criteria) — f-139 P3.
   app.patch("/api/profiles/:id", async (c) => {
     const p = c.get("principal");

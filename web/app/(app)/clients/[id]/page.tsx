@@ -10,6 +10,14 @@ import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/ui/avatar";
 import { Chip, statusTone } from "@/components/ui/chip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import {
   Table,
   TableHeader,
@@ -23,7 +31,17 @@ import { api } from "@/lib/api";
 import { CandidateHeatmap } from "@/components/candidate-heatmap";
 import { CandidateAgenda, type AgendaItem } from "@/components/candidate-agenda";
 import { EditCandidateDialog } from "@/components/edit-candidate-dialog";
-import type { Client, ClientProfile, Match, ApplicationRow, ConsentStatus, StaffRole } from "@/lib/types";
+import type {
+  Client,
+  ClientProfile,
+  Match,
+  ApplicationRow,
+  ConsentStatus,
+  StaffRole,
+  Feedback,
+  FeedbackSignal,
+  CandidateDocuments,
+} from "@/lib/types";
 
 function consentTone(consent: ConsentStatus) {
   return consent === "active" ? "success" : consent === "pending" ? "warning" : "danger";
@@ -261,7 +279,7 @@ export default function CandidateProfilePage() {
 
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList variant="line">
-            {["overview", "matches", "tracks", "applications", "activity"].map((t) => (
+            {["overview", "matches", "tracks", "applications", "documents", "activity"].map((t) => (
               <TabsTrigger key={t} value={t} className="capitalize">
                 {t}
               </TabsTrigger>
@@ -358,20 +376,37 @@ export default function CandidateProfilePage() {
           </TabsContent>
 
           {/* Activity */}
+          {/* Documents */}
+          <TabsContent value="documents" className="pt-4">
+            <DocumentsPanel
+              clientId={id}
+              onOpenResume={(matchId) => setResumeMatchId(matchId)}
+            />
+          </TabsContent>
+
+          {/* Activity + feedback */}
           <TabsContent value="activity" className="pt-4">
-            <Card className="px-5">
-              {activity.length === 0 && <p className="text-sm text-muted-foreground">No activity yet.</p>}
-              <div className="flex flex-col gap-2">
-                {activity.map((e, i) => (
-                  <div key={i} className="flex items-baseline gap-3 text-sm">
-                    <span className="w-20 shrink-0 text-xs text-muted-foreground tabular-nums">
-                      {fmtDate(e.ts)}
-                    </span>
-                    <span className="text-muted-foreground">{e.text}</span>
-                  </div>
-                ))}
-              </div>
-            </Card>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.4fr_1fr]">
+              <Card className="px-5">
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+                  Timeline
+                </div>
+                {activity.length === 0 && (
+                  <p className="text-sm text-muted-foreground">No activity yet.</p>
+                )}
+                <div className="flex flex-col gap-2">
+                  {activity.map((e, i) => (
+                    <div key={i} className="flex items-baseline gap-3 text-sm">
+                      <span className="w-20 shrink-0 text-xs text-muted-foreground tabular-nums">
+                        {fmtDate(e.ts)}
+                      </span>
+                      <span className="text-muted-foreground">{e.text}</span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+              <FeedbackPanel clientId={id} canEdit={role !== "viewer"} />
+            </div>
           </TabsContent>
         </Tabs>
       </div>
@@ -876,5 +911,187 @@ function CampaignCard({
         </Button>
       </div>
     </Card>
+  );
+}
+
+// ── f-146: operator feedback panel (Activity tab) ──────────────────────
+const SIGNALS: { value: FeedbackSignal; label: string }[] = [
+  { value: "interested", label: "Interested" },
+  { value: "not_interested", label: "Not interested" },
+  { value: "already_applied", label: "Already applied" },
+  { value: "wrong_location", label: "Wrong location" },
+  { value: "comp_too_low", label: "Comp too low" },
+  { value: "seniority_off", label: "Seniority off" },
+  { value: "not_my_field", label: "Not my field" },
+  { value: "other", label: "Other" },
+];
+const SIGNAL_LABEL: Record<FeedbackSignal, string> = Object.fromEntries(
+  SIGNALS.map((s) => [s.value, s.label]),
+) as Record<FeedbackSignal, string>;
+function signalTone(s: FeedbackSignal): "success" | "danger" | "warning" | "neutral" {
+  if (s === "interested") return "success";
+  if (s === "not_interested" || s === "not_my_field") return "danger";
+  if (s === "other" || s === "already_applied") return "neutral";
+  return "warning";
+}
+
+function FeedbackPanel({ clientId, canEdit }: { clientId: string; canEdit: boolean }) {
+  const [items, setItems] = useState<Feedback[] | null>(null);
+  const [signal, setSignal] = useState<FeedbackSignal>("interested");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listFeedback(clientId).then(setItems).catch(() => setItems([]));
+  }, [clientId]);
+
+  async function add() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const row = await api.addFeedback(clientId, { signal, note: note.trim() || null });
+      setItems((cur) => [row, ...(cur ?? [])]);
+      setNote("");
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="px-5">
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+        Feedback
+      </div>
+      {canEdit && (
+        <div className="mb-4 flex flex-col gap-2">
+          <Select value={signal} onValueChange={(v) => setSignal(v as FeedbackSignal)}>
+            <SelectTrigger className="h-8">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SIGNALS.map((s) => (
+                <SelectItem key={s.value} value={s.value}>
+                  {s.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={2}
+            placeholder="Optional note…"
+          />
+          <div className="flex items-center justify-between">
+            {err && <span className="text-xs text-destructive">{err}</span>}
+            <Button size="sm" className="ml-auto" disabled={busy} onClick={() => void add()}>
+              {busy ? "Logging…" : "Log feedback"}
+            </Button>
+          </div>
+        </div>
+      )}
+      <div className="flex flex-col gap-2">
+        {items === null && <p className="text-sm text-muted-foreground">Loading…</p>}
+        {items?.length === 0 && (
+          <p className="text-sm text-muted-foreground">No feedback yet.</p>
+        )}
+        {items?.map((f) => (
+          <div key={f.id} className="border-b border-border/50 pb-2 last:border-0">
+            <div className="flex items-center justify-between gap-2">
+              <Chip tone={signalTone(f.signal)}>{SIGNAL_LABEL[f.signal] ?? f.signal}</Chip>
+              <span className="text-xs text-muted-foreground tabular-nums">{fmtDate(f.createdAt)}</span>
+            </div>
+            {f.note && <p className="mt-1 text-sm text-muted-foreground">{f.note}</p>}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// ── f-146: documents tab (résumés + tailored résumés) ──────────────────
+function DocumentsPanel({
+  clientId,
+  onOpenResume,
+}: {
+  clientId: string;
+  onOpenResume: (matchId: string) => void;
+}) {
+  const [docs, setDocs] = useState<CandidateDocuments | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listDocuments(clientId).then(setDocs).catch((e: Error) => setError(e.message));
+  }, [clientId]);
+
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!docs) return <p className="text-sm text-muted-foreground">Loading…</p>;
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <Card className="px-5">
+        <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+          Résumés
+        </div>
+        {docs.resumes.length === 0 && (
+          <p className="text-sm text-muted-foreground">No résumé uploaded yet.</p>
+        )}
+        <div className="flex flex-col gap-2">
+          {docs.resumes.map((r) => (
+            <div key={r.profileId} className="rounded-lg border border-border/60 bg-background/40 px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-medium">{r.label}</span>
+                <Chip tone={r.embeddedAt ? "success" : "neutral"}>
+                  {r.embeddedAt ? "embedded" : "uploaded"}
+                </Chip>
+              </div>
+              <div className="mt-0.5 truncate text-xs text-muted-foreground">{r.fileName}</div>
+              {r.hasFile && (
+                <a
+                  href={api.resumeFileUrl(clientId, r.profileId)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 inline-block text-xs text-primary hover:underline"
+                >
+                  Open file
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card className="px-5">
+        <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+          Tailored résumés
+        </div>
+        {docs.tailored.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            None yet — approve a match to generate a tailored résumé.
+          </p>
+        )}
+        <div className="flex flex-col gap-2">
+          {docs.tailored.map((t) => (
+            <button
+              key={t.matchId}
+              onClick={() => onOpenResume(t.matchId)}
+              className="rounded-lg border border-border/60 bg-background/40 px-3 py-2 text-left transition-colors hover:bg-foreground/[0.03]"
+            >
+              <div className="truncate text-sm font-medium">
+                {t.jobTitle ?? "Tailored résumé"}
+                {t.company ? <span className="text-muted-foreground"> @ {t.company}</span> : null}
+              </div>
+              <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                <span>{fmtDate(t.generatedAt)}</span>
+                {t.model && <span>· {t.model}</span>}
+              </div>
+            </button>
+          ))}
+        </div>
+      </Card>
+    </div>
   );
 }
