@@ -5,7 +5,7 @@ interface Env {
   HYPERDRIVE: Hyperdrive;
   RESUMES: R2Bucket;
   JOB_CACHE: KVNamespace;
-  MATCH_QUEUE: Queue<MatchJob>;
+  MATCH_QUEUE: Queue<QueueJob>;
   BETTER_AUTH_SECRET: string;
   BETTER_AUTH_URL: string;
   // Shared secret guarding POST /api/seed/org-admin (creates the first org +
@@ -23,3 +23,23 @@ interface MatchJob {
   campaignId: string;
   orgId: string;
 }
+
+// Queue message: tailor the master résumé for one approved match. Runs in the
+// queue consumer (not request `waitUntil`) because the draft→critique→revise
+// chain on a cold cache exceeds the post-response budget and gets cancelled
+// before it can save — leaving the résumé stuck "pending" (f-147 live finding).
+interface TailorJob {
+  kind: "tailor";
+  matchId: string;
+  // The resolved request principal, captured server-side at enqueue time (never
+  // from client input) so the consumer can run the RLS-scoped repo writes.
+  principal: {
+    principal: "staff" | "client";
+    userId: string;
+    orgId: string;
+    role?: "admin" | "operator" | "viewer";
+    clientId?: string;
+  };
+}
+
+type QueueJob = MatchJob | TailorJob;

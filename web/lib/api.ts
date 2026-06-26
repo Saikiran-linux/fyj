@@ -19,6 +19,10 @@ import type {
   ClientStatus,
   ConsentStatus,
   CalendarEvent,
+  ExperienceEntry,
+  Feedback,
+  FeedbackSignal,
+  CandidateDocuments,
 } from "./types";
 
 /**
@@ -110,6 +114,24 @@ export const api = {
   listClientApplications: (clientId: string) =>
     req<ApplicationRow[]>(`/api/clients/${clientId}/applications`),
 
+  // Candidate feedback (f-146) — operators log signals/notes; client portal also inserts.
+  listFeedback: (clientId: string) => req<Feedback[]>(`/api/clients/${clientId}/feedback`),
+  addFeedback: (
+    clientId: string,
+    input: { signal: FeedbackSignal; note?: string | null; rating?: number | null },
+  ) =>
+    req<Feedback>(`/api/clients/${clientId}/feedback`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  // Documents (f-146) — résumés + generated tailored résumés for a candidate.
+  listDocuments: (clientId: string) => req<CandidateDocuments>(`/api/clients/${clientId}/documents`),
+  // Original uploaded résumé file (R2). A plain link/navigation; the session
+  // cookie rides along, so use it as an <a href> rather than a fetch.
+  resumeFileUrl: (clientId: string, profileId: string) =>
+    `${API_URL}/api/clients/${clientId}/profiles/${profileId}/resume-file`,
+
   listProfiles: (clientId: string) =>
     req<ClientProfile[]>(`/api/clients/${clientId}/profiles`),
   createProfile: (clientId: string, input: { label: string; resumeText?: string }) =>
@@ -121,6 +143,15 @@ export const api = {
     id: string,
     input: { autopilot?: boolean; targetFilters?: Record<string, unknown> },
   ) => req<ClientProfile>(`/api/profiles/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  // Save operator edits to the résumé-extracted Experience / Skills sections (f-146).
+  updateProfileExtraction: (
+    id: string,
+    input: { experience?: ExperienceEntry[]; skills?: string[] },
+  ) =>
+    req<ClientProfile>(`/api/profiles/${id}/extraction`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
   uploadResume: (clientId: string, profileId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -177,6 +208,13 @@ export const api = {
     req<ApproveMatchResult & { tailoring?: boolean }>(`/api/matches/${matchId}/approve`, {
       method: "POST",
     }),
+  // Kick (or re-kick) tailoring without changing the match action — used when the
+  // drawer is opened directly. `reason` explains why it can't run (no résumé / no AI).
+  tailorMatch: (matchId: string) =>
+    req<{ tailoring: boolean; reason?: "no_resume" | "no_ai" }>(
+      `/api/matches/${matchId}/tailor`,
+      { method: "POST" },
+    ),
   declineMatch: (matchId: string) =>
     req<CampaignMatch>(`/api/matches/${matchId}/action`, {
       method: "POST",

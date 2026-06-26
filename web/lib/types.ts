@@ -10,6 +10,47 @@ export type Principal =
 export type ClientStatus = "active" | "paused" | "placed" | "archived";
 export type ConsentStatus = "active" | "pending" | "revoked";
 
+export type FeedbackSignal =
+  | "interested"
+  | "not_interested"
+  | "already_applied"
+  | "wrong_location"
+  | "comp_too_low"
+  | "seniority_off"
+  | "not_my_field"
+  | "other";
+
+export interface Feedback {
+  id: string;
+  clientId: string;
+  signal: FeedbackSignal;
+  rating: number | null;
+  note: string | null;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+export interface CandidateDocuments {
+  resumes: {
+    profileId: string;
+    label: string;
+    fileName: string;
+    hasFile: boolean;
+    hasText: boolean;
+    embeddedAt: string | null;
+    uploadedAt: string;
+  }[];
+  tailored: {
+    matchId: string;
+    model: string | null;
+    generatedAt: string;
+    jobId: string | null;
+    companyId: string | null;
+    jobTitle: string | null;
+    company: string | null;
+  }[];
+}
+
 export interface Client {
   id: string;
   orgId: string;
@@ -36,6 +77,28 @@ export interface ClientProfile {
   embeddedAt: string | null;
   autopilot: boolean;
   createdAt: string;
+}
+
+/** One work-history role extracted from a résumé (editable on the Overview). */
+export interface ExperienceEntry {
+  title: string | null;
+  company: string | null;
+  period: string | null;
+  summary: string | null;
+}
+
+/** The résumé-extracted candidate fields stored on `ClientProfile.parsedProfile.candidate`. */
+export interface CandidateExtraction {
+  fullName?: string | null;
+  headline?: string | null;
+  location?: string | null;
+  seniority?: string | null;
+  skills?: string[];
+  experience?: ExperienceEntry[];
+  roleFamilies?: string[];
+  minComp?: number | null;
+  workplace?: string | null;
+  targetTitles?: string[];
 }
 
 /** A ranked job from the index, hydrated for display (search routes). */

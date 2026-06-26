@@ -10,6 +10,14 @@ import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/ui/avatar";
 import { Chip, statusTone } from "@/components/ui/chip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import {
   Table,
   TableHeader,
@@ -18,12 +26,24 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import { Pencil } from "lucide-react";
+import { Pencil, Plus, Trash2, X, Upload } from "lucide-react";
 import { api } from "@/lib/api";
 import { CandidateHeatmap } from "@/components/candidate-heatmap";
 import { CandidateAgenda, type AgendaItem } from "@/components/candidate-agenda";
 import { EditCandidateDialog } from "@/components/edit-candidate-dialog";
-import type { Client, ClientProfile, Match, ApplicationRow, ConsentStatus, StaffRole } from "@/lib/types";
+import type {
+  Client,
+  ClientProfile,
+  Match,
+  ApplicationRow,
+  ConsentStatus,
+  StaffRole,
+  CandidateExtraction,
+  ExperienceEntry,
+  Feedback,
+  FeedbackSignal,
+  CandidateDocuments,
+} from "@/lib/types";
 
 function consentTone(consent: ConsentStatus) {
   return consent === "active" ? "success" : consent === "pending" ? "warning" : "danger";
@@ -52,9 +72,19 @@ export default function CandidateProfilePage() {
   const [matching, setMatching] = useState(false);
   const [resumeMatchId, setResumeMatchId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [matchesError, setMatchesError] = useState<string | null>(null);
 
   const loadProfiles = () => api.listProfiles(id).then(setProfiles);
-  const reloadMatches = () => api.listMatches({ candidateId: id }).then(setMatches).catch(() => {});
+  // Distinguish "still loading" from "load failed" — a swallowed error left the
+  // Matches tab stuck on "Loading…" forever, which reads as "no matches".
+  const reloadMatches = () =>
+    api
+      .listMatches({ candidateId: id })
+      .then((m) => {
+        setMatches(m);
+        setMatchesError(null);
+      })
+      .catch((e: Error) => setMatchesError(e.message));
 
   async function findMatches(profileId?: string) {
     const target = profileId
@@ -80,7 +110,13 @@ export default function CandidateProfilePage() {
   useEffect(() => {
     api.getClient(id).then(setClient).catch((e: Error) => setError(e.message));
     loadProfiles().catch(() => {});
-    api.listMatches({ candidateId: id }).then(setMatches).catch(() => {});
+    api
+      .listMatches({ candidateId: id })
+      .then((m) => {
+        setMatches(m);
+        setMatchesError(null);
+      })
+      .catch((e: Error) => setMatchesError(e.message));
     api.listClientApplications(id).then(setApps).catch(() => {});
     api
       .me()
@@ -172,6 +208,14 @@ export default function CandidateProfilePage() {
     stage: a.status,
   }));
 
+  // The Overview's Experience/Skills sections read & save to the candidate's
+  // primary résumé profile (the embedded one, else the most recent).
+  const primaryProfile =
+    (profiles ?? []).find((p) => p.embeddedAt) ?? (profiles ?? [])[0] ?? null;
+  const canEditProfile = role !== "viewer";
+  const onProfileSaved = (updated: ClientProfile) =>
+    setProfiles((cur) => (cur ? cur.map((p) => (p.id === updated.id ? updated : p)) : [updated]));
+
   return (
     <>
       <Topbar title="Candidates" />
@@ -261,7 +305,7 @@ export default function CandidateProfilePage() {
 
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList variant="line">
-            {["overview", "matches", "tracks", "applications", "activity"].map((t) => (
+            {["overview", "matches", "tracks", "applications", "documents", "activity"].map((t) => (
               <TabsTrigger key={t} value={t} className="capitalize">
                 {t}
               </TabsTrigger>
@@ -274,17 +318,28 @@ export default function CandidateProfilePage() {
               <CandidateHeatmap dates={heatmapDates} />
               <CandidateAgenda items={agendaItems} />
             </div>
-            <Card className="px-5">
-              <dl className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
-                <Field label="Email" value={client?.email ?? "—"} />
-                <Field label="Phone" value={client?.phone ?? "—"} />
-                <Field label="Status" value={client?.status ?? "—"} />
-                <Field label="Consent" value={client?.consentStatus ?? "—"} />
-                <Field label="Portal" value={client?.portalEnabled ? "Enabled" : "Off"} />
-                <Field label="Added" value={client ? fmtDate(client.createdAt) : "—"} />
-              </dl>
-              {client?.notes && <p className="mt-4 text-sm text-muted-foreground">{client.notes}</p>}
-            </Card>
+            <div className="flex flex-col gap-4">
+              <ExperienceSection
+                profile={primaryProfile}
+                canEdit={canEditProfile}
+                onSaved={onProfileSaved}
+                onUploadClick={() => setTab("tracks")}
+              />
+              <SkillsSection
+                profile={primaryProfile}
+                canEdit={canEditProfile}
+                onSaved={onProfileSaved}
+                onUploadClick={() => setTab("tracks")}
+              />
+              {client?.notes && (
+                <Card className="px-5">
+                  <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Notes
+                  </div>
+                  <p className="text-sm text-muted-foreground">{client.notes}</p>
+                </Card>
+              )}
+            </div>
           </TabsContent>
 
           {/* Matches */}
@@ -298,8 +353,17 @@ export default function CandidateProfilePage() {
               </Button>
             </div>
             <div className="flex flex-col gap-2">
-              {matches === null && <p className="text-sm text-muted-foreground">Loading…</p>}
-              {matches?.length === 0 && (
+              {matchesError ? (
+                <div className="flex items-center gap-3 text-sm">
+                  <span className="text-destructive">Couldn’t load matches: {matchesError}</span>
+                  <Button size="sm" variant="outline" onClick={() => void reloadMatches()}>
+                    Retry
+                  </Button>
+                </div>
+              ) : matches === null ? (
+                <p className="text-sm text-muted-foreground">Loading…</p>
+              ) : null}
+              {!matchesError && matches?.length === 0 && (
                 <p className="text-sm text-muted-foreground">
                   No matches yet — upload a résumé to a campaign, then “Find matches”.
                 </p>
@@ -358,20 +422,37 @@ export default function CandidateProfilePage() {
           </TabsContent>
 
           {/* Activity */}
+          {/* Documents */}
+          <TabsContent value="documents" className="pt-4">
+            <DocumentsPanel
+              clientId={id}
+              onOpenResume={(matchId) => setResumeMatchId(matchId)}
+            />
+          </TabsContent>
+
+          {/* Activity + feedback */}
           <TabsContent value="activity" className="pt-4">
-            <Card className="px-5">
-              {activity.length === 0 && <p className="text-sm text-muted-foreground">No activity yet.</p>}
-              <div className="flex flex-col gap-2">
-                {activity.map((e, i) => (
-                  <div key={i} className="flex items-baseline gap-3 text-sm">
-                    <span className="w-20 shrink-0 text-xs text-muted-foreground tabular-nums">
-                      {fmtDate(e.ts)}
-                    </span>
-                    <span className="text-muted-foreground">{e.text}</span>
-                  </div>
-                ))}
-              </div>
-            </Card>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.4fr_1fr]">
+              <Card className="px-5">
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+                  Timeline
+                </div>
+                {activity.length === 0 && (
+                  <p className="text-sm text-muted-foreground">No activity yet.</p>
+                )}
+                <div className="flex flex-col gap-2">
+                  {activity.map((e, i) => (
+                    <div key={i} className="flex items-baseline gap-3 text-sm">
+                      <span className="w-20 shrink-0 text-xs text-muted-foreground tabular-nums">
+                        {fmtDate(e.ts)}
+                      </span>
+                      <span className="text-muted-foreground">{e.text}</span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+              <FeedbackPanel clientId={id} canEdit={role !== "viewer"} />
+            </div>
           </TabsContent>
         </Tabs>
       </div>
@@ -527,20 +608,24 @@ function mdToHtml(md: string): string {
 
 function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: () => void }) {
   const [markdown, setMarkdown] = useState<string | null>(null);
-  const [status, setStatus] = useState<"pending" | "ready" | "timeout">("pending");
+  const [status, setStatus] = useState<"pending" | "ready" | "timeout" | "blocked">("pending");
+  const [reason, setReason] = useState<"no_resume" | "no_ai" | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [retry, setRetry] = useState(0);
 
-  // The tailor graph (draft → critique → revise) can take well over a minute
-  // when the critique triggers a revision pass, so poll for a few minutes before
-  // backing off to a "taking longer" state the operator can re-check — never
-  // leave it stuck silently. ~3 min budget at 3s intervals.
+  // On open: show an existing résumé if one was already generated; otherwise make
+  // sure tailoring is actually RUNNING (the drawer can be opened via "Tailored
+  // résumé" without ever approving, in which case nothing kicked it — that silent
+  // no-op is what made the button look broken). Then poll. The tailor graph
+  // (draft → critique → revise) can take a minute+, so we budget ~3 min at 3s
+  // before backing off to a re-checkable "taking longer" state.
   useEffect(() => {
     const MAX_TRIES = 60;
     let tries = 0;
     let timer: ReturnType<typeof setTimeout>;
     let cancelled = false;
+
     const poll = async () => {
       try {
         const r = await api.getTailoredResume(matchId);
@@ -557,7 +642,39 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
       if (++tries < MAX_TRIES) timer = setTimeout(poll, 3000);
       else setStatus("timeout");
     };
-    void poll();
+
+    const start = async () => {
+      // Already generated? Show it immediately.
+      try {
+        const r = await api.getTailoredResume(matchId);
+        if (cancelled) return;
+        if (r.status === "ready" && r.markdown) {
+          setMarkdown(r.markdown);
+          setStatus("ready");
+          return;
+        }
+      } catch {
+        /* fall through */
+      }
+      if (cancelled) return;
+      // Ensure tailoring is running; surface a precise reason if it can't.
+      try {
+        const k = await api.tailorMatch(matchId);
+        if (cancelled) return;
+        if (!k.tailoring) {
+          setReason(k.reason ?? null);
+          setStatus("blocked");
+          return;
+        }
+      } catch {
+        /* approve may have already kicked it — poll regardless */
+      }
+      if (cancelled) return;
+      setStatus("pending");
+      void poll();
+    };
+
+    void start();
     return () => {
       cancelled = true;
       clearTimeout(timer);
@@ -600,7 +717,9 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
                 ? "Tailoring in progress…"
                 : status === "timeout"
                   ? "Still working — check again in a moment."
-                  : "Editable — Save changes, then export PDF."}
+                  : status === "blocked"
+                    ? "Can’t tailor yet."
+                    : "Editable — Save changes, then export PDF."}
             </div>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
@@ -611,6 +730,24 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
           {status === "pending" ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               Drafting &amp; critiquing the résumé… this can take up to a minute or two.
+            </div>
+          ) : status === "blocked" ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground">
+              {reason === "no_resume" ? (
+                <p>
+                  This candidate has no master résumé yet.
+                  <br />
+                  Upload a résumé to their campaign (Tracks tab), then reopen this to tailor it.
+                </p>
+              ) : reason === "no_ai" ? (
+                <p>
+                  AI résumé tailoring isn’t configured on the server.
+                  <br />
+                  Set the Anthropic API key on the Worker to enable it.
+                </p>
+              ) : (
+                <p>Tailoring isn’t available for this match right now.</p>
+              )}
             </div>
           ) : status === "timeout" ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground">
@@ -623,11 +760,10 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
                 size="sm"
                 variant="outline"
                 onClick={() => {
-                  // Re-kick tailoring (idempotent — approve re-runs the graph in
-                  // the background) in case the first background pass failed, then
-                  // resume polling.
+                  // Re-kick tailoring (idempotent — does NOT change the match
+                  // action) in case the first background pass failed, then poll.
                   setStatus("pending");
-                  void api.approveMatch(matchId).catch(() => {});
+                  void api.tailorMatch(matchId).catch(() => {});
                   setRetry((r) => r + 1);
                 }}
               >
@@ -668,11 +804,345 @@ function Stat({ label, value }: { label: string; value: number | string }) {
   );
 }
 
-function Field({ label, value }: { label: string; value: string }) {
+// ── Overview résumé sections (f-146): editable Experience + Skills, populated
+// from the candidate's primary résumé profile (parsed_profile.candidate). ──────
+function readCandidate(profile: ClientProfile | null): CandidateExtraction | null {
+  const c = (profile?.parsedProfile as { candidate?: CandidateExtraction } | null)?.candidate;
+  return c ?? null;
+}
+
+const EMPTY_ENTRY: ExperienceEntry = { title: "", company: "", period: "", summary: "" };
+const trimOrNull = (v: string | null) => {
+  const t = (v ?? "").trim();
+  return t ? t : null;
+};
+
+function SectionHeader({ title }: { title: string }) {
   return (
     <div>
-      <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className="text-sm capitalize text-foreground">{value}</dd>
+      <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+        From résumé
+      </div>
+      <h3 className="mt-1 font-heading text-lg tracking-tight">{title}</h3>
+    </div>
+  );
+}
+
+function EmptyExtract({
+  onUploadClick,
+  kind,
+}: {
+  onUploadClick: () => void;
+  kind: "experience" | "skills";
+}) {
+  return (
+    <div className="flex flex-col items-start gap-3">
+      <p className="text-sm text-muted-foreground">
+        No résumé yet — upload one and we’ll extract{" "}
+        {kind === "experience" ? "work experience" : "skills"} automatically.
+      </p>
+      <Button variant="outline" size="sm" onClick={onUploadClick}>
+        <Upload className="mr-1.5 size-3.5" /> Upload résumé
+      </Button>
+    </div>
+  );
+}
+
+function ExperienceSection({
+  profile,
+  canEdit,
+  onSaved,
+  onUploadClick,
+}: {
+  profile: ClientProfile | null;
+  canEdit: boolean;
+  onSaved: (p: ClientProfile) => void;
+  onUploadClick: () => void;
+}) {
+  const experience = readCandidate(profile)?.experience ?? [];
+  const [editing, setEditing] = useState(false);
+  const [rows, setRows] = useState<ExperienceEntry[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  function startEdit() {
+    setRows(experience.length ? experience.map((e) => ({ ...e })) : [{ ...EMPTY_ENTRY }]);
+    setErr(null);
+    setEditing(true);
+  }
+  function patchRow(i: number, key: keyof ExperienceEntry, value: string) {
+    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, [key]: value } : r)));
+  }
+  async function save() {
+    if (!profile) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const cleaned = rows
+        .map((r) => ({
+          title: trimOrNull(r.title),
+          company: trimOrNull(r.company),
+          period: trimOrNull(r.period),
+          summary: trimOrNull(r.summary),
+        }))
+        .filter((r) => r.title || r.company || r.summary);
+      const updated = await api.updateProfileExtraction(profile.id, { experience: cleaned });
+      onSaved(updated);
+      setEditing(false);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!profile) {
+    return (
+      <div className="rounded-xl border border-border/60 bg-background/40 p-5">
+        <div className="mb-3">
+          <SectionHeader title="Experience" />
+        </div>
+        <EmptyExtract onUploadClick={onUploadClick} kind="experience" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-border/60 bg-background/40 p-5">
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <SectionHeader title="Experience" />
+        {canEdit && !editing && (
+          <Button variant="outline" size="sm" onClick={startEdit}>
+            <Pencil className="mr-1.5 size-3.5" /> {experience.length ? "Edit" : "Add"}
+          </Button>
+        )}
+      </div>
+
+      {err && <p className="mb-2 text-sm text-destructive">{err}</p>}
+
+      {!editing ? (
+        experience.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No experience on file yet.{" "}
+            {profile.embeddedAt
+              ? "Use Add to enter it manually."
+              : "Upload a résumé to extract it automatically."}
+          </p>
+        ) : (
+          <ol className="flex flex-col gap-3">
+            {experience.map((e, i) => (
+              <li key={i} className="border-l-2 border-border pl-3">
+                <div className="text-sm font-medium text-foreground">
+                  {e.title || "Role"}
+                  {e.company ? <span className="text-muted-foreground"> · {e.company}</span> : null}
+                </div>
+                {e.period && <div className="text-xs tabular-nums text-muted-foreground">{e.period}</div>}
+                {e.summary && <p className="mt-1 text-sm text-muted-foreground">{e.summary}</p>}
+              </li>
+            ))}
+          </ol>
+        )
+      ) : (
+        <div className="flex flex-col gap-3">
+          {rows.map((r, i) => (
+            <div key={i} className="rounded-lg border border-border/60 bg-card/40 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">Role {i + 1}</span>
+                <button
+                  onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}
+                  className="text-muted-foreground hover:text-destructive"
+                  aria-label="Remove role"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <Input
+                  placeholder="Title"
+                  value={r.title ?? ""}
+                  onChange={(e) => patchRow(i, "title", e.target.value)}
+                />
+                <Input
+                  placeholder="Company"
+                  value={r.company ?? ""}
+                  onChange={(e) => patchRow(i, "company", e.target.value)}
+                />
+              </div>
+              <Input
+                className="mt-2"
+                placeholder="Period (e.g. 2021 – Present)"
+                value={r.period ?? ""}
+                onChange={(e) => patchRow(i, "period", e.target.value)}
+              />
+              <Textarea
+                className="mt-2"
+                rows={2}
+                placeholder="What they did + a concrete impact"
+                value={r.summary ?? ""}
+                onChange={(e) => patchRow(i, "summary", e.target.value)}
+              />
+            </div>
+          ))}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setRows((rs) => [...rs, { ...EMPTY_ENTRY }])}
+            >
+              <Plus className="mr-1.5 size-3.5" /> Add role
+            </Button>
+            <div className="ml-auto flex items-center gap-2">
+              <Button variant="ghost" size="sm" disabled={saving} onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" disabled={saving} onClick={() => void save()}>
+                {saving ? "Saving…" : "Save"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SkillsSection({
+  profile,
+  canEdit,
+  onSaved,
+  onUploadClick,
+}: {
+  profile: ClientProfile | null;
+  canEdit: boolean;
+  onSaved: (p: ClientProfile) => void;
+  onUploadClick: () => void;
+}) {
+  const skills = readCandidate(profile)?.skills ?? [];
+  const [editing, setEditing] = useState(false);
+  const [chips, setChips] = useState<string[]>([]);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  function startEdit() {
+    setChips([...skills]);
+    setDraft("");
+    setErr(null);
+    setEditing(true);
+  }
+  function addDraft() {
+    const parts = draft.split(",").map((s) => s.trim()).filter(Boolean);
+    if (!parts.length) return;
+    setChips((cs) => Array.from(new Set([...cs, ...parts])));
+    setDraft("");
+  }
+  async function save() {
+    if (!profile) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const extra = draft.split(",").map((s) => s.trim()).filter(Boolean);
+      const merged = Array.from(new Set([...chips, ...extra]));
+      const updated = await api.updateProfileExtraction(profile.id, { skills: merged });
+      onSaved(updated);
+      setEditing(false);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!profile) {
+    return (
+      <div className="rounded-xl border border-border/60 bg-background/40 p-5">
+        <div className="mb-3">
+          <SectionHeader title="Skills" />
+        </div>
+        <EmptyExtract onUploadClick={onUploadClick} kind="skills" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-border/60 bg-background/40 p-5">
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <SectionHeader title="Skills" />
+        {canEdit && !editing && (
+          <Button variant="outline" size="sm" onClick={startEdit}>
+            <Pencil className="mr-1.5 size-3.5" /> {skills.length ? "Edit" : "Add"}
+          </Button>
+        )}
+      </div>
+
+      {err && <p className="mb-2 text-sm text-destructive">{err}</p>}
+
+      {!editing ? (
+        skills.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No skills on file yet.{" "}
+            {profile.embeddedAt
+              ? "Use Add to enter them."
+              : "Upload a résumé to extract them automatically."}
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {skills.map((s) => (
+              <Chip key={s} tone="neutral">
+                {s}
+              </Chip>
+            ))}
+          </div>
+        )
+      ) : (
+        <div>
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {chips.length === 0 && (
+              <span className="text-sm text-muted-foreground">No skills — add some below.</span>
+            )}
+            {chips.map((s) => (
+              <span
+                key={s}
+                className="inline-flex items-center gap-1 border border-border bg-muted/40 px-2 py-0.5 text-xs"
+              >
+                {s}
+                <button
+                  onClick={() => setChips((cs) => cs.filter((x) => x !== s))}
+                  className="text-muted-foreground hover:text-destructive"
+                  aria-label={`Remove ${s}`}
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <Input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === ",") {
+                  e.preventDefault();
+                  addDraft();
+                }
+              }}
+              placeholder="Type a skill, press Enter"
+              className="flex-1"
+            />
+            <Button variant="outline" size="sm" onClick={addDraft}>
+              Add
+            </Button>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <Button variant="ghost" size="sm" disabled={saving} onClick={() => setEditing(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" disabled={saving} onClick={() => void save()}>
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -876,5 +1346,187 @@ function CampaignCard({
         </Button>
       </div>
     </Card>
+  );
+}
+
+// ── f-146: operator feedback panel (Activity tab) ──────────────────────
+const SIGNALS: { value: FeedbackSignal; label: string }[] = [
+  { value: "interested", label: "Interested" },
+  { value: "not_interested", label: "Not interested" },
+  { value: "already_applied", label: "Already applied" },
+  { value: "wrong_location", label: "Wrong location" },
+  { value: "comp_too_low", label: "Comp too low" },
+  { value: "seniority_off", label: "Seniority off" },
+  { value: "not_my_field", label: "Not my field" },
+  { value: "other", label: "Other" },
+];
+const SIGNAL_LABEL: Record<FeedbackSignal, string> = Object.fromEntries(
+  SIGNALS.map((s) => [s.value, s.label]),
+) as Record<FeedbackSignal, string>;
+function signalTone(s: FeedbackSignal): "success" | "danger" | "warning" | "neutral" {
+  if (s === "interested") return "success";
+  if (s === "not_interested" || s === "not_my_field") return "danger";
+  if (s === "other" || s === "already_applied") return "neutral";
+  return "warning";
+}
+
+function FeedbackPanel({ clientId, canEdit }: { clientId: string; canEdit: boolean }) {
+  const [items, setItems] = useState<Feedback[] | null>(null);
+  const [signal, setSignal] = useState<FeedbackSignal>("interested");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listFeedback(clientId).then(setItems).catch(() => setItems([]));
+  }, [clientId]);
+
+  async function add() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const row = await api.addFeedback(clientId, { signal, note: note.trim() || null });
+      setItems((cur) => [row, ...(cur ?? [])]);
+      setNote("");
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="px-5">
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+        Feedback
+      </div>
+      {canEdit && (
+        <div className="mb-4 flex flex-col gap-2">
+          <Select value={signal} onValueChange={(v) => setSignal(v as FeedbackSignal)}>
+            <SelectTrigger className="h-8">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SIGNALS.map((s) => (
+                <SelectItem key={s.value} value={s.value}>
+                  {s.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={2}
+            placeholder="Optional note…"
+          />
+          <div className="flex items-center justify-between">
+            {err && <span className="text-xs text-destructive">{err}</span>}
+            <Button size="sm" className="ml-auto" disabled={busy} onClick={() => void add()}>
+              {busy ? "Logging…" : "Log feedback"}
+            </Button>
+          </div>
+        </div>
+      )}
+      <div className="flex flex-col gap-2">
+        {items === null && <p className="text-sm text-muted-foreground">Loading…</p>}
+        {items?.length === 0 && (
+          <p className="text-sm text-muted-foreground">No feedback yet.</p>
+        )}
+        {items?.map((f) => (
+          <div key={f.id} className="border-b border-border/50 pb-2 last:border-0">
+            <div className="flex items-center justify-between gap-2">
+              <Chip tone={signalTone(f.signal)}>{SIGNAL_LABEL[f.signal] ?? f.signal}</Chip>
+              <span className="text-xs text-muted-foreground tabular-nums">{fmtDate(f.createdAt)}</span>
+            </div>
+            {f.note && <p className="mt-1 text-sm text-muted-foreground">{f.note}</p>}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// ── f-146: documents tab (résumés + tailored résumés) ──────────────────
+function DocumentsPanel({
+  clientId,
+  onOpenResume,
+}: {
+  clientId: string;
+  onOpenResume: (matchId: string) => void;
+}) {
+  const [docs, setDocs] = useState<CandidateDocuments | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listDocuments(clientId).then(setDocs).catch((e: Error) => setError(e.message));
+  }, [clientId]);
+
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!docs) return <p className="text-sm text-muted-foreground">Loading…</p>;
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <Card className="px-5">
+        <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+          Résumés
+        </div>
+        {docs.resumes.length === 0 && (
+          <p className="text-sm text-muted-foreground">No résumé uploaded yet.</p>
+        )}
+        <div className="flex flex-col gap-2">
+          {docs.resumes.map((r) => (
+            <div key={r.profileId} className="rounded-lg border border-border/60 bg-background/40 px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-medium">{r.label}</span>
+                <Chip tone={r.embeddedAt ? "success" : "neutral"}>
+                  {r.embeddedAt ? "embedded" : "uploaded"}
+                </Chip>
+              </div>
+              <div className="mt-0.5 truncate text-xs text-muted-foreground">{r.fileName}</div>
+              {r.hasFile && (
+                <a
+                  href={api.resumeFileUrl(clientId, r.profileId)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 inline-block text-xs text-primary hover:underline"
+                >
+                  Open file
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card className="px-5">
+        <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+          Tailored résumés
+        </div>
+        {docs.tailored.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            None yet — approve a match to generate a tailored résumé.
+          </p>
+        )}
+        <div className="flex flex-col gap-2">
+          {docs.tailored.map((t) => (
+            <button
+              key={t.matchId}
+              onClick={() => onOpenResume(t.matchId)}
+              className="rounded-lg border border-border/60 bg-background/40 px-3 py-2 text-left transition-colors hover:bg-foreground/[0.03]"
+            >
+              <div className="truncate text-sm font-medium">
+                {t.jobTitle ?? "Tailored résumé"}
+                {t.company ? <span className="text-muted-foreground"> @ {t.company}</span> : null}
+              </div>
+              <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                <span>{fmtDate(t.generatedAt)}</span>
+                {t.model && <span>· {t.model}</span>}
+              </div>
+            </button>
+          ))}
+        </div>
+      </Card>
+    </div>
   );
 }

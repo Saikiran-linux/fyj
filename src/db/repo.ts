@@ -295,6 +295,45 @@ export function submitFeedback(db: DB, who: Principal, input: FeedbackInput) {
   });
 }
 
+// Staff-logged feedback on a candidate (f-146). Mirrors submitFeedback but for
+// the staff-insert RLS path: clientId is explicit (not the caller's own), and
+// org/createdBy come from the verified staff Principal.
+export function addStaffFeedback(
+  db: DB,
+  who: Principal,
+  clientId: string,
+  input: FeedbackInput,
+) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .insert(feedback)
+      .values({
+        orgId: who.orgId,
+        clientId,
+        campaignId: input.campaignId ?? null,
+        jobId: input.jobId ?? null,
+        companyId: input.companyId ?? null,
+        placementId: input.placementId ?? null,
+        signal: input.signal,
+        rating: input.rating ?? null,
+        note: input.note ?? null,
+        createdBy: who.userId,
+      })
+      .returning();
+    return row ?? null;
+  });
+}
+
+export function listFeedback(db: DB, who: Principal, clientId: string) {
+  return withTenant(db, who, (tx) =>
+    tx
+      .select()
+      .from(feedback)
+      .where(eq(feedback.clientId, clientId))
+      .orderBy(desc(feedback.createdAt)),
+  );
+}
+
 // ── dashboard analytics (f-139) ────────────────────────────────────────
 // Org-wide rollups for the operator dashboard. The heavy lifting is in the
 // org-scoped SECURITY DEFINER functions in db/policies.sql (they span every
@@ -686,12 +725,13 @@ export function applyResumeExtraction(
     if (Object.keys(patch).length > 1)
       await tx.update(clients).set(patch).where(eq(clients.id, clientId));
 
-    // INDEX-SAFE filters only (no `families`/`titles`/`locations` — the index's
-    // family vocab doesn't match our free-text values and zeroes results; those
-    // live in parsed_profile.candidate for display). Embedding does the role fit.
+    // INDEX-SAFE filters only (no `families`/`seniority`/`titles`/`locations` —
+    // the index uses controlled vocabularies for these that our free-text values
+    // don't match, which zeroes the search; verified live that a `seniority:["mid"]`
+    // filter returned 0 where dropping it returned 25). Those live in
+    // parsed_profile.candidate for display; the embedding carries role/seniority fit.
     const targetFilters = {
       targetOnly: true,
-      ...(ex.seniority ? { seniority: [ex.seniority] } : {}),
       ...(ex.workplace === "remote" ? { remote: true } : {}),
       ...(typeof ex.minComp === "number" && ex.minComp > 0 ? { compFloor: ex.minComp } : {}),
     };
@@ -777,6 +817,54 @@ export function getTailoringContext(db: DB, who: Principal, matchId: string) {
       .where(eq(campaignMatches.id, matchId))
       .limit(1);
     return row ?? null;
+  });
+}
+
+// All documents for a candidate (f-146 Documents tab): the uploaded master
+// résumé per campaign/profile, plus every generated tailored résumé (one per
+// approved match). Tailored rows carry jobId/companyId for the caller to
+// hydrate a title via the index; their `matchId` opens the existing résumé route.
+export function listDocuments(db: DB, who: Principal, clientId: string) {
+  return withTenant(db, who, async (tx) => {
+    const profileRows = await tx
+      .select({
+        profileId: clientProfiles.id,
+        label: clientProfiles.label,
+        storagePath: clientProfiles.resumeStoragePath,
+        resumeText: clientProfiles.resumeText,
+        embeddedAt: clientProfiles.embeddedAt,
+        createdAt: clientProfiles.createdAt,
+      })
+      .from(clientProfiles)
+      .where(eq(clientProfiles.clientId, clientId))
+      .orderBy(desc(clientProfiles.createdAt));
+
+    const resumes = profileRows
+      .filter((r) => r.storagePath || r.resumeText)
+      .map((r) => ({
+        profileId: r.profileId,
+        label: r.label,
+        fileName: r.storagePath ? (r.storagePath.split("/").pop() ?? "résumé") : "résumé (text)",
+        hasFile: Boolean(r.storagePath),
+        hasText: Boolean(r.resumeText),
+        embeddedAt: r.embeddedAt,
+        uploadedAt: r.embeddedAt ?? r.createdAt,
+      }));
+
+    const tailored = await tx
+      .select({
+        matchId: reports.campaignMatchId,
+        model: reports.model,
+        generatedAt: reports.generatedAt,
+        jobId: campaignMatches.jobId,
+        companyId: campaignMatches.companyId,
+      })
+      .from(reports)
+      .innerJoin(campaignMatches, eq(campaignMatches.id, reports.campaignMatchId))
+      .where(eq(reports.clientId, clientId))
+      .orderBy(desc(reports.generatedAt));
+
+    return { resumes, tailored };
   });
 }
 
@@ -929,6 +1017,50 @@ export function updateProfile(
       .where(eq(clientProfiles.id, profileId))
       .returning();
     if (row) await audit(tx, who, "profile.update", "client_profile", row.id, { autopilot: input.autopilot });
+    return row ?? null;
+  });
+}
+
+// Editable Experience/Skills sections on the Overview (f-146). These live in the
+// profile's parsed_profile.candidate jsonb (populated by the résumé intake graph);
+// operators can correct them by hand. We read-merge so we never clobber the rest of
+// parsed_profile (summary/email/embedding inputs). Display-only — does NOT re-embed.
+export interface ProfileExtractionPatch {
+  experience?: Array<{
+    title: string | null;
+    company: string | null;
+    period: string | null;
+    summary: string | null;
+  }>;
+  skills?: string[];
+}
+
+export function updateProfileCandidate(
+  db: DB,
+  who: Principal,
+  profileId: string,
+  patch: ProfileExtractionPatch,
+) {
+  return withTenant(db, who, async (tx) => {
+    const [current] = await tx
+      .select({ parsedProfile: clientProfiles.parsedProfile })
+      .from(clientProfiles)
+      .where(eq(clientProfiles.id, profileId))
+      .limit(1);
+    if (!current) return null;
+    const parsed = (current.parsedProfile ?? {}) as Record<string, unknown>;
+    const candidate = (parsed.candidate ?? {}) as Record<string, unknown>;
+    const nextCandidate = {
+      ...candidate,
+      ...(patch.experience !== undefined ? { experience: patch.experience } : {}),
+      ...(patch.skills !== undefined ? { skills: patch.skills } : {}),
+    };
+    const [row] = await tx
+      .update(clientProfiles)
+      .set({ parsedProfile: { ...parsed, candidate: nextCandidate }, updatedAt: new Date() })
+      .where(eq(clientProfiles.id, profileId))
+      .returning();
+    if (row) await audit(tx, who, "profile.extraction.edit", "client_profile", profileId, {});
     return row ?? null;
   });
 }

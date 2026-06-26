@@ -124,8 +124,15 @@ async function enrichCampaignBackground(env: Env, who: Principal, campaignId: st
   }
 }
 
-/** Background (waitUntil) résumé tailoring for an approved match (own DB conn). */
-async function tailorMatchBackground(env: Env, who: Principal, matchId: string): Promise<void> {
+/**
+ * Résumé tailoring for an approved match (own DB conn). Runs in the QUEUE
+ * consumer (src/index.ts), not request `waitUntil`: a cold-cache draft→critique→
+ * revise chain takes longer than the post-response budget and Cloudflare cancels
+ * it before `saveTailoredResume`, leaving the résumé stuck "pending" (f-147 live
+ * finding). The queue gives it a full background invocation. Exported for the
+ * consumer; the request path only ENQUEUES (see `enqueueTailor`).
+ */
+export async function tailorMatchBackground(env: Env, who: Principal, matchId: string): Promise<void> {
   if (!hasAnthropic(env)) return;
   const { db, close } = createDb(env.HYPERDRIVE.connectionString);
   try {
@@ -360,6 +367,58 @@ export function createApi() {
     );
   });
 
+  // ── candidate feedback (f-146 activity panel) ────────────────────────
+  app.get("/api/clients/:id/feedback", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    return c.json(await repo.listFeedback(c.get("db"), p, c.req.param("id")));
+  });
+
+  app.post("/api/clients/:id/feedback", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as Partial<repo.FeedbackInput>;
+    const signal = body.signal as repo.FeedbackSignal | undefined;
+    if (!signal || !feedbackSignal.enumValues.includes(signal))
+      return c.json({ error: "valid signal required" }, 400);
+    const row = await repo.addStaffFeedback(c.get("db"), p, c.req.param("id"), { ...body, signal });
+    return row ? c.json(row, 201) : c.json({ error: "not_found" }, 404);
+  });
+
+  // ── documents (f-146): résumés + generated tailored résumés ──────────
+  app.get("/api/clients/:id/documents", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const docs = await repo.listDocuments(c.get("db"), p, c.req.param("id"));
+    // Hydrate the tailored-résumé job titles from the index (KV-cached), same as /api/matches.
+    const tailored = await Promise.all(
+      docs.tailored.map(async (t) => {
+        const job = t.jobId && t.companyId ? await getJob(c.env, t.jobId, t.companyId).catch(() => null) : null;
+        return { ...t, jobTitle: job?.title ?? null, company: job?.company ?? null };
+      }),
+    );
+    return c.json({ resumes: docs.resumes, tailored });
+  });
+
+  // Stream the original uploaded résumé file from R2. RLS-checked: getProfile
+  // only resolves if this staff can access the profile's candidate.
+  app.get("/api/clients/:id/profiles/:profileId/resume-file", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const profile = await repo.getProfile(c.get("db"), p, c.req.param("profileId"));
+    if (!profile || profile.clientId !== c.req.param("id") || !profile.resumeStoragePath)
+      return c.json({ error: "not_found" }, 404);
+    const obj = await c.env.RESUMES.get(profile.resumeStoragePath);
+    if (!obj) return c.json({ error: "not_found" }, 404);
+    const fileName = profile.resumeStoragePath.split("/").pop() ?? "resume";
+    return new Response(obj.body, {
+      headers: {
+        "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream",
+        "content-disposition": `inline; filename="${fileName.replace(/"/g, "")}"`,
+      },
+    });
+  });
+
   // Update a track/profile (autopilot, criteria) — f-139 P3.
   app.patch("/api/profiles/:id", async (c) => {
     const p = c.get("principal");
@@ -369,6 +428,38 @@ export function createApi() {
       targetFilters?: Record<string, unknown>;
     };
     const row = await repo.updateProfile(c.get("db"), p, c.req.param("id"), body);
+    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  // Save operator edits to the résumé-extracted Experience / Skills sections
+  // (f-146). Display-only — merged into parsed_profile.candidate; not re-embedded.
+  app.patch("/api/profiles/:id/extraction", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      experience?: unknown;
+      skills?: unknown;
+    };
+    const patch: repo.ProfileExtractionPatch = {};
+    if (body.skills !== undefined) {
+      if (!Array.isArray(body.skills)) return c.json({ error: "skills must be an array" }, 400);
+      patch.skills = body.skills.map((s) => String(s).trim()).filter(Boolean).slice(0, 40);
+    }
+    if (body.experience !== undefined) {
+      if (!Array.isArray(body.experience))
+        return c.json({ error: "experience must be an array" }, 400);
+      patch.experience = body.experience.slice(0, 20).map((e) => {
+        const o = (e ?? {}) as Record<string, unknown>;
+        const str = (v: unknown) => {
+          const t = v == null ? "" : String(v).trim();
+          return t ? t.slice(0, 600) : null;
+        };
+        return { title: str(o.title), company: str(o.company), period: str(o.period), summary: str(o.summary) };
+      });
+    }
+    if (patch.experience === undefined && patch.skills === undefined)
+      return c.json({ error: "nothing to update" }, 400);
+    const row = await repo.updateProfileCandidate(c.get("db"), p, c.req.param("id"), patch);
     return row ? c.json(row) : c.json({ error: "not_found" }, 404);
   });
 
@@ -470,9 +561,11 @@ export function createApi() {
 
     const campaignId = await repo.ensureCampaign(c.get("db"), p, profile.id, true);
     if (!campaignId) return c.json({ error: "no_campaign" }, 409);
-    // Drop `families` defensively — the index's family vocab doesn't match our
-    // values and zeroes results (also guards profiles embedded before this fix).
-    const { families: _drop, ...tf } = (profile.targetFilters as JobFilters) ?? {};
+    // Drop `families` + `seniority` defensively — the index uses controlled
+    // vocabularies for both that our extracted values don't match, zeroing the
+    // search (guards profiles embedded before the f-147 fix; verified live that a
+    // stored `seniority:["mid"]` filter returned 0). Embedding carries that fit.
+    const { families: _df, seniority: _ds, ...tf } = (profile.targetFilters as JobFilters) ?? {};
     const hits = await searchJobs(c.env, profile.embedding as number[], {
       ...tf,
       targetOnly: tf.targetOnly ?? true,
@@ -573,10 +666,30 @@ export function createApi() {
     const matchId = c.req.param("id");
     const result = await repo.approveMatch(c.get("db"), p, matchId);
     if (!result) return c.json({ error: "not_found" }, 404);
-    // Tailor the master résumé to this job in the background (LangGraph tailor
-    // graph: draft → critique → revise). The editable Markdown lands on the match.
-    c.executionCtx.waitUntil(tailorMatchBackground(c.env, p, matchId));
+    // Tailor the master résumé to this job — ENQUEUED, not run in `waitUntil`,
+    // so the cold-cache draft→critique→revise chain runs in a full queue
+    // invocation instead of being cancelled by the short post-response budget
+    // (which left the résumé stuck "pending" — f-147 live finding).
+    if (hasAnthropic(c.env))
+      c.executionCtx.waitUntil(c.env.MATCH_QUEUE.send({ kind: "tailor", matchId, principal: p }));
     return c.json({ ...result, tailoring: hasAnthropic(c.env) });
+  });
+
+  // Kick (or re-kick) résumé tailoring for a match WITHOUT changing its action —
+  // used when the operator opens the tailored-résumé drawer directly. Returns a
+  // precise reason when tailoring can't run so the UI shows a message instead of
+  // spinning forever (the silent-no-op that made "Tailored résumé" look broken).
+  app.post("/api/matches/:id/tailor", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const matchId = c.req.param("id");
+    const ctx = await repo.getTailoringContext(c.get("db"), p, matchId);
+    if (!ctx) return c.json({ error: "not_found" }, 404);
+    if (!ctx.resumeText)
+      return c.json({ tailoring: false, reason: "no_resume" as const });
+    if (!hasAnthropic(c.env)) return c.json({ tailoring: false, reason: "no_ai" as const });
+    c.executionCtx.waitUntil(c.env.MATCH_QUEUE.send({ kind: "tailor", matchId, principal: p }));
+    return c.json({ tailoring: true });
   });
 
   // Tailored résumé (Markdown) for an approved match — read + operator edits.

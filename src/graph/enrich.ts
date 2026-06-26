@@ -33,9 +33,18 @@ const EnrichState = Annotation.Root({
 export function buildEnrichGraph(env: Env) {
   const graph = new StateGraph(EnrichState)
     .addNode("evaluate", async (s) => {
+      // The candidate profile is identical across all ~25 jobs in a match-run,
+      // so mark system+candidate as a cached prefix and vary only the job after
+      // it. NOTE: this only actually caches when system+candidate exceeds Haiku's
+      // 4096-token minimum (short résumés won't hit it — harmless no-op if so),
+      // and the run's bounded fan-out means later calls only read the cache once
+      // the first has begun streaming.
       const result = await anthropicJson<EnrichResult>(env, {
         system: ENRICH_SYSTEM,
-        user: `CANDIDATE PROFILE:\n${s.candidateSummary}\n\nJOB POSTING:\n${s.jobText}`,
+        user: [
+          { text: `CANDIDATE PROFILE:\n${s.candidateSummary}`, cache: true },
+          `JOB POSTING:\n${s.jobText}`,
+        ],
         model: HAIKU,
         maxTokens: 700,
       });
