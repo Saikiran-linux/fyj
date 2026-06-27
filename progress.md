@@ -4,6 +4,18 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-26 — f-147 follow-up #3: don't regenerate a tailored résumé on re-approve
+
+Tailored résumés are persisted in `reports.full_markdown` (Neon), keyed by `campaign_match_id`, and
+the drawer shows the stored one via `GET /resume` (a reload never regenerates). But `approve`
+*always* re-enqueued tailoring and `saveTailoredResume` upserts — so re-approving a match (they
+reappear in the list after a reload, `action=shortlisted`) regenerated and **clobbered the stored
+résumé, including operator edits**. Fix: the approve route now checks `getTailoredResume` first and
+only enqueues tailoring when none exists yet; `POST /api/matches/:id/tailor` stays the explicit
+"force regenerate" path. Worker `tsc` green; needs a `wrangler deploy`.
+
+---
+
 ## 2026-06-26 — f-147 follow-up #2: LIVE root-cause of "tailor does nothing" = waitUntil cancel
 
 Reproduced the "tailor résumé does nothing" report live and captured the cause with `wrangler tail`:
