@@ -678,12 +678,24 @@ export function ensureCampaign(db: DB, who: Principal, profileId: string, activa
   });
 }
 
-/** Surface index matches onto a campaign (dedup in DB), deriving org/client there. */
+/**
+ * Surface index matches onto a campaign (dedup in DB), deriving org/client there.
+ * `fitScore`/`confidence`/`guardrails` are optional (f-149 rerank + soft signals);
+ * when omitted, app.record_campaign_run falls back to the cosine-derived band.
+ */
 export function recordRun(
   db: DB,
   who: Principal,
   campaignId: string,
-  matches: Array<{ jobId: string; companyId: string; score: number; rank: number }>,
+  matches: Array<{
+    jobId: string;
+    companyId: string;
+    score: number;
+    rank: number;
+    fitScore?: number;
+    confidence?: MatchConfidence;
+    guardrails?: string[];
+  }>,
 ) {
   return withTenant(db, who, (tx) =>
     tx.execute(

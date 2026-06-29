@@ -25,6 +25,31 @@ export interface JobMatch {
   score: number;
 }
 
+/**
+ * A candidate row from search_jobs_hybrid (f-149): a JobMatch enriched with the
+ * text + structured fields the Worker needs to (a) rerank on text via Voyage and
+ * (b) score the soft comp/seniority signals — WITHOUT N get_job round-trips.
+ * `score` is the RRF fusion score; `cosine` is the dense similarity (display +
+ * tie-break). dense_rank/lexical_rank are null when a row came from only one arm.
+ */
+export interface HybridCandidate {
+  jobId: string;
+  companyId: string;
+  score: number; // RRF
+  cosine: number;
+  denseRank: number | null;
+  lexicalRank: number | null;
+  title: string | null;
+  descriptionSummary: string | null;
+  seniority: string | null;
+  remote: string | null;
+  compMin: number | null;
+  compMax: number | null;
+  compCurrency: string | null;
+  compInterval: string | null;
+  compText: string | null;
+}
+
 export interface JobDetail {
   jobId: string;
   companyId: string;
@@ -91,6 +116,71 @@ export async function searchJobs(
   }
   const rows = (await res.json()) as Array<{ job_id: string; company_id: string; score: number }>;
   return rows.map((r) => ({ jobId: r.job_id, companyId: r.company_id, score: r.score }));
+}
+
+/**
+ * Hybrid (dense + lexical, RRF-fused) retrieval against the index (f-149). Calls
+ * the additive search_jobs_hybrid RPC and returns a candidate pool already
+ * carrying title/summary/comp/seniority, so the caller can rerank + soft-score
+ * locally. `lexicalQuery` is the candidate's skills/keywords (free text); pass
+ * null/empty to run dense-only (the RPC simply skips the lexical arm).
+ *
+ * Kept separate from searchJobs (which stays the lean job_id/score contract used
+ * by display/hydration paths). If the index predates this RPC, the POST 404s and
+ * the caller's matchProfile falls back to searchJobs — matching never breaks.
+ */
+export async function searchJobsHybrid(
+  env: Env,
+  embedding: number[],
+  lexicalQuery: string | null,
+  filters: JobFilters,
+): Promise<HybridCandidate[]> {
+  const res = await fetchWithTimeout(`${env.FYJ_INDEX_URL}/rest/v1/rpc/search_jobs_hybrid`, {
+    method: "POST",
+    headers: headers(env),
+    body: JSON.stringify({
+      query_vec: embedding,
+      lexical_query: lexicalQuery && lexicalQuery.trim() ? lexicalQuery : null,
+      filters,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`search_jobs_hybrid ${res.status}: ${await res.text()}`);
+  }
+  const rows = (await res.json()) as Array<{
+    job_id: string;
+    company_id: string;
+    score: number;
+    cosine: number;
+    dense_rank: number | null;
+    lexical_rank: number | null;
+    title: string | null;
+    description_summary: string | null;
+    seniority: string | null;
+    remote: string | null;
+    comp_min: number | null;
+    comp_max: number | null;
+    comp_currency: string | null;
+    comp_interval: string | null;
+    comp_text: string | null;
+  }>;
+  return rows.map((r) => ({
+    jobId: r.job_id,
+    companyId: r.company_id,
+    score: r.score,
+    cosine: r.cosine,
+    denseRank: r.dense_rank,
+    lexicalRank: r.lexical_rank,
+    title: r.title,
+    descriptionSummary: r.description_summary,
+    seniority: r.seniority,
+    remote: r.remote,
+    compMin: r.comp_min,
+    compMax: r.comp_max,
+    compCurrency: r.comp_currency,
+    compInterval: r.comp_interval,
+    compText: r.comp_text,
+  }));
 }
 
 /** Hydrate one job's detail for display. Cache in KV (JOB_CACHE) by job id. */

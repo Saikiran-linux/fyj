@@ -4,6 +4,25 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-29 — f-149: hybrid retrieval + Voyage rerank-2.5 + soft signals on the match path
+
+Cross-repo session (branch `claude/resume-tailor-job-matching-wr2i3o` in **both** repos). Moves the production profile↔job match path off dense-only cosine onto the validated **dense + lexical(RRF) → rerank → soft-adjust** pipeline, and fixes the filter design. The index side (lexical GIN + `search_jobs_hybrid` RPC) is **f-148** in `fyj_scanner`; this repo is the consumer.
+
+**New pipeline — one orchestrator, every entrypoint.** `src/match.ts` `matchProfile()` is now the single path behind résumé intake (`graph/intake.ts` search node), on-demand `POST /api/profiles/:id/match`, the display `GET /api/profiles/:id/jobs`, and the background `matcher.ts`:
+1. **Hybrid retrieve** — `searchJobsHybrid` (`index-client.ts`) → new `search_jobs_hybrid` RPC: dense (HNSW cosine) + lexical (`ts_rank_cd`) arms, RRF-fused (k=60), returning candidate text + comp + seniority.
+2. **Voyage rerank-2.5** — `src/rerank.ts` (`rerankRelevance`), contract proven in `fyj_scanner/scripts/voyage-vs-openai.mjs`. **Non-fatal**: no `VOYAGE_API_KEY` / error / timeout → keep RRF order. Query = résumé precis; docs = job title+summary.
+3. **Soft adjust** — `seniorityBand()` (coarse bands so the résumé's `mid` no longer zeroes against the index vocab) + comp-floor penalty that **never punishes null comp**. Small weights so the reranker dominates; both annotate `guardrails`.
+
+**Filter design (the spec):** hard filters cut to `closed_at` + `targetOnly` + opt-in `remote` + `since`. `compFloor`/`families`/`seniority` are stripped from the predicates in `matchProfile` and applied softly. `department`/`employment_type`/`industry` stay embedding-only (already true — `fyj_scanner buildJobText` + the summary precis). Embedding model unchanged (`text-embedding-3-small`); Voyage is **rerank-only** → no re-embed.
+
+**DB (no Drizzle migration — reused existing columns + `parsed_profile` jsonb).** `db/policies.sql`: `get_campaign_for_match` now also returns `resume_text` + `parsed_profile` (drop+recreate — return cols changed) so the matcher can build the rerank/lexical queries; `record_campaign_run` accepts optional `fitScore`/`confidence`/`guardrails`, falling back to the cosine-derived band. `repo.recordRun` payload widened. `VOYAGE_API_KEY` (+ optional `VOYAGE_RERANK_MODEL`/`_ENABLED`) added to `worker-configuration.d.ts` + `.dev.vars.example`.
+
+**Verified:** `./init.sh` green — Worker `tsc --noEmit` clean, `db:generate` → "No schema changes, nothing to migrate", web `tsc --noEmit` clean. **NOT runtime-verified** (no Neon/Cloudflare infra, per CLAUDE.md) and depends on the `fyj_scanner` f-148 RPC being applied to the index. Degrades safely: dense-only `searchJobs` if the RPC 404s; RRF order if `VOYAGE_API_KEY` is unset.
+
+**Deploy order:** apply `fyj_scanner` `supabase/schema.sql` (f-148) to the index **first**, then `wrangler secret put VOYAGE_API_KEY` + deploy the Worker. **What's next:** deploy + the f-133 RLS smoke test once infra exists; consider folding the soft seniority/comp signals into the f-136 LLM eval pass.
+
+---
+
 ## 2026-06-26 — f-147 follow-up #2: LIVE root-cause of "tailor does nothing" = waitUntil cancel
 
 Reproduced the "tailor résumé does nothing" report live and captured the cause with `wrangler tail`:

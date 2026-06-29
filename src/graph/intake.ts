@@ -14,7 +14,8 @@
 import { StateGraph, START, END, Annotation } from "@langchain/langgraph/web";
 import { summarizeResume } from "../summarize";
 import { embedRaw } from "../embeddings";
-import { searchJobs, type JobFilters, type JobMatch } from "../index-client";
+import { type JobFilters } from "../index-client";
+import { matchProfile, type SurfacedMatch } from "../match";
 import { openaiJson } from "./llm";
 
 /** One role from the candidate's work history (for the editable Experience section). */
@@ -38,12 +39,10 @@ export interface ExtractedCandidate {
   targetTitles: string[];
 }
 
-export interface SurfacedMatch {
-  jobId: string;
-  companyId: string;
-  score: number;
-  rank: number;
-}
+// Re-exported from ../match so the intake result and the matcher/api share ONE
+// surfaced-match shape (jobId/companyId/score/rank + rerank fitScore/confidence/
+// guardrails). The `search` node below produces these via matchProfile().
+export type { SurfacedMatch } from "../match";
 
 export interface IntakeResult {
   candidate: ExtractedCandidate | null;
@@ -148,10 +147,17 @@ export function buildIntakeGraph(env: Env, hydrate = 25) {
     })
     .addNode("search", async (s) => {
       if (!s.embedding) return { matches: [] };
-      const hits: JobMatch[] = await searchJobs(env, s.embedding, s.filters ?? { targetOnly: true });
-      const matches = hits
-        .slice(0, hydrate)
-        .map((m, i) => ({ jobId: m.jobId, companyId: m.companyId, score: m.score, rank: i + 1 }));
+      // Full pipeline (hybrid retrieve → Voyage rerank → soft adjust). We have the
+      // skills + precis + seniority in hand here, so feed them straight in; the
+      // rerank query is the JD-style precis (what the index summaries look like).
+      const matches = await matchProfile(env, {
+        embedding: s.embedding,
+        queryText: s.embedInput ?? s.resumeText,
+        lexicalQuery: (s.candidate?.skills ?? []).join(", ") || null,
+        filters: s.filters ?? { targetOnly: true },
+        profileSeniority: s.candidate?.seniority ?? null,
+        topK: hydrate,
+      });
       return { matches };
     })
     .addEdge(START, "extract")

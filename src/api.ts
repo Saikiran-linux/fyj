@@ -15,7 +15,8 @@ import {
 } from "./db/schema";
 import { parseResume } from "./resume";
 import { embedText } from "./embeddings";
-import { searchAndHydrate, getJob, searchJobs, type JobFilters } from "./index-client";
+import { searchAndHydrate, getJob, type JobFilters } from "./index-client";
+import { matchProfile } from "./match";
 import { runIntake } from "./graph/intake";
 import { enrichOne } from "./graph/enrich";
 import { tailorResume } from "./graph/tailor";
@@ -561,18 +562,21 @@ export function createApi() {
 
     const campaignId = await repo.ensureCampaign(c.get("db"), p, profile.id, true);
     if (!campaignId) return c.json({ error: "no_campaign" }, 409);
-    // Drop `families` + `seniority` defensively — the index uses controlled
-    // vocabularies for both that our extracted values don't match, zeroing the
-    // search (guards profiles embedded before the f-147 fix; verified live that a
-    // stored `seniority:["mid"]` filter returned 0). Embedding carries that fit.
-    const { families: _df, seniority: _ds, ...tf } = (profile.targetFilters as JobFilters) ?? {};
-    const hits = await searchJobs(c.env, profile.embedding as number[], {
-      ...tf,
-      targetOnly: tf.targetOnly ?? true,
+    // Full pipeline (hybrid retrieve → Voyage rerank → soft adjust). matchProfile
+    // strips compFloor/families/seniority from the hard filters and applies them
+    // as soft signals (so a `mid` seniority no longer zeroes results, and a comp
+    // floor no longer drops the null-comp majority).
+    const parsed = (profile.parsedProfile ?? {}) as {
+      summary?: string;
+      candidate?: { skills?: string[]; seniority?: string | null } | null;
+    };
+    const matches = await matchProfile(c.env, {
+      embedding: profile.embedding as number[],
+      queryText: parsed.summary ?? profile.resumeText ?? "",
+      lexicalQuery: (parsed.candidate?.skills ?? []).join(", ") || null,
+      filters: (profile.targetFilters as JobFilters) ?? { targetOnly: true },
+      profileSeniority: parsed.candidate?.seniority ?? null,
     });
-    const matches = hits
-      .slice(0, 25)
-      .map((m, i) => ({ jobId: m.jobId, companyId: m.companyId, score: m.score, rank: i + 1 }));
     if (matches.length) await repo.recordRun(c.get("db"), p, campaignId, matches);
     c.executionCtx.waitUntil(enrichCampaignBackground(c.env, p, campaignId));
 
@@ -587,11 +591,36 @@ export function createApi() {
     const profile = await repo.getProfile(c.get("db"), c.get("principal"), c.req.param("id"));
     if (!profile) return c.json({ error: "not_found" }, 404);
     if (!profile.embedding) return c.json({ error: "profile_not_embedded" }, 409);
-    const filters: JobFilters = {
-      ...(profile.targetFilters as JobFilters),
-      limit: 50,
+    // Same reranked pipeline as the surfacing paths, then hydrate the ranked refs
+    // for display, so the Jobs view and the campaign matches agree on ordering.
+    const parsed = (profile.parsedProfile ?? {}) as {
+      summary?: string;
+      candidate?: { skills?: string[]; seniority?: string | null } | null;
     };
-    const hits = await searchAndHydrate(c.env, profile.embedding as number[], filters);
+    const ranked = await matchProfile(c.env, {
+      embedding: profile.embedding as number[],
+      queryText: parsed.summary ?? profile.resumeText ?? "",
+      lexicalQuery: (parsed.candidate?.skills ?? []).join(", ") || null,
+      filters: (profile.targetFilters as JobFilters) ?? { targetOnly: true },
+      profileSeniority: parsed.candidate?.seniority ?? null,
+    });
+    const hits = (
+      await Promise.all(
+        ranked.map(async (m) => {
+          const detail = await getJob(c.env, m.jobId, m.companyId).catch(() => null);
+          return detail
+            ? {
+                ...detail,
+                score: m.score,
+                rank: m.rank,
+                fitScore: m.fitScore,
+                confidence: m.confidence,
+                guardrails: m.guardrails,
+              }
+            : null;
+        }),
+      )
+    ).filter((h): h is NonNullable<typeof h> => h !== null);
     return c.json(hits);
   });
 

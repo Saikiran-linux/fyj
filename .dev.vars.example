@@ -22,6 +22,14 @@ WEB_ORIGIN="http://localhost:3000,https://fyj-ops-console.vercel.app"
 OPENAI_API_KEY=""
 ANTHROPIC_API_KEY=""
 
+# Voyage reranker (second-stage rerank of profile<->job matches, f-149). OPTIONAL:
+# leave blank to disable — matching falls back to the RRF/cosine order (non-fatal).
+# Model defaults to rerank-2.5; override with VOYAGE_RERANK_MODEL. Force-off with
+# VOYAGE_RERANK_ENABLED=0.
+VOYAGE_API_KEY=""
+# VOYAGE_RERANK_MODEL="rerank-2.5"
+# VOYAGE_RERANK_ENABLED="1"
+
 # Read-only access to the fyj job index (search_jobs / get_job)
 FYJ_INDEX_URL="https://mwcpoaefmggapztkxakp.supabase.co"
 FYJ_INDEX_KEY=""
