@@ -17,9 +17,13 @@ Cross-repo session (branch `claude/resume-tailor-job-matching-wr2i3o` in **both*
 
 **DB (no Drizzle migration — reused existing columns + `parsed_profile` jsonb).** `db/policies.sql`: `get_campaign_for_match` now also returns `resume_text` + `parsed_profile` (drop+recreate — return cols changed) so the matcher can build the rerank/lexical queries; `record_campaign_run` accepts optional `fitScore`/`confidence`/`guardrails`, falling back to the cosine-derived band. `repo.recordRun` payload widened. `VOYAGE_API_KEY` (+ optional `VOYAGE_RERANK_MODEL`/`_ENABLED`) added to `worker-configuration.d.ts` + `.dev.vars.example`.
 
-**Verified:** `./init.sh` green — Worker `tsc --noEmit` clean, `db:generate` → "No schema changes, nothing to migrate", web `tsc --noEmit` clean. **NOT runtime-verified** (no Neon/Cloudflare infra, per CLAUDE.md) and depends on the `fyj_scanner` f-148 RPC being applied to the index. Degrades safely: dense-only `searchJobs` if the RPC 404s; RRF order if `VOYAGE_API_KEY` is unset.
+**Verified:** `./init.sh` green — Worker `tsc --noEmit` clean, `db:generate` → "No schema changes, nothing to migrate", web `tsc --noEmit` clean.
 
-**Deploy order:** apply `fyj_scanner` `supabase/schema.sql` (f-148) to the index **first**, then `wrangler secret put VOYAGE_API_KEY` + deploy the Worker. **What's next:** deploy + the f-133 RLS smoke test once infra exists; consider folding the soft seniority/comp signals into the f-136 LLM eval pass.
+**DEPLOYED TO PROD 2026-06-29.** (1) `fyj_scanner` f-148 applied to the index (Supabase `mwcpoaefmggapztkxakp`) — `search_jobs_hybrid` verified live (HTTP 200 via PostgREST, fused dense+lexical rows incl. a lexical-only hit). (2) Voyage `rerank-2.5` key validated. (3) `wrangler secret put VOYAGE_API_KEY` set. (4) `wrangler deploy` succeeded — version `cdca2802-…`, `https://fyj-ops-console.saikiran13055.workers.dev`, hourly cron + `fyj-match` queue, all bindings resolved; Worker boots.
+
+**⚠️ OUTSTANDING — Neon `db:policies` not yet applied.** `wrangler deploy` ships Worker code only; the extended `db/policies.sql` functions live in **Neon** and must be applied with `npm run db:policies` (needs `DATABASE_URL`). Until then the **background cron/queue matcher will error** — `matcher.ts` now selects `resume_text` + `parsed_profile` from `app.get_campaign_for_match()`, which the old (6-column) function doesn't return. Fails safe (no data written, no matches that tick). **Request paths are unaffected** — résumé upload / on-demand `/match` / `/jobs` call `matchProfile` (live index RPC) + `record_campaign_run` (signature unchanged; falls back to cosine-derived fit until policies applied). **Action: apply `db/policies.sql` to Neon.**
+
+**What's next:** apply Neon `db:policies`; then exercise resume → reranked matches end-to-end; consider folding the soft seniority/comp signals into the f-136 LLM eval pass.
 
 ---
 
