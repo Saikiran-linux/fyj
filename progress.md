@@ -4,6 +4,56 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-29 — f-151: Explore browse-by-default + reranked search; match dedup; delete track
+
+- **Explore browses newest jobs by default** (no query): new index RPC `recent_jobs(filters)` (newest active, applied to Supabase as `f151_recent_jobs`) → `/api/jobs/recent` → `index-client.recentJobs` → Explore default view. A query runs hybrid+rerank search. **Dropped all candidate-fit framing** from Explore (no "% match" chip / rationale) — it's job discovery.
+- **`/api/search` now goes through hybrid + Voyage rerank** (the same `matchProfile` pipeline as candidate matching; the NL query doubles as the lexical-arm query and the rerank query), then hydrates. Verified: "remote senior data engineer python aws spark" → Senior Data Engineer roles on top.
+- **Match dedup** (`repo.listMatches`): collapse rows by `(clientId, jobId)` keeping best fit, so two similar tracks no longer show the same job multiple times in the candidate Matches tab / Review queue.
+- **Delete track**: `repo.deleteProfile` + `DELETE /api/profiles/:id` (RLS `client_profiles` staff-write + FK cascade to campaign/matches) + a **Delete** button on the CampaignCard (Tracks tab, with confirm).
+- **Verified live** (Worker `ce8cb40a`, admin session): recent jobs, reranked search, delete route (404 on bogus id). Gates: Worker tsc + web tsc + `next build` green.
+- ⚠️ **Web deploy:** these UI changes (and f-150's Explore/Review) only reach the user once **Vercel deploys** — Vercel tracks the production branch, so the feature branch must be merged/deployed. The Worker + index are already live.
+
+---
+
+## 2026-06-29 — f-150: Explore → general job search; Review queue; admin-role hardening
+
+Follow-ups after the f-149 deploy.
+
+**Explore tab is now general NL job search** (was the candidate match-review queue). `web/app/(app)/explore/page.tsx` rebuilt around `api.searchJobs` → `/api/search` (embed query → `searchAndHydrate` over ~169k jobs), `?q=` driven. The match-review queue (approve/decline across the book) was **moved to a new `/review` route** + a "Review" nav item (`components/navbar.tsx`) so the approve→placement/tailoring flow isn't lost. `/jobs` (profile-specific reranked view via `?profile=`) is unchanged.
+
+**Auth: `resolvePrincipal` hardened** (`src/principal.ts`). A multi-membership staff user now defaults to the **highest-privilege role** (admin>operator>viewer) with a stable tiebreak, instead of the oldest-org role — `resolve_staff_memberships` only orders by `created_at`, and ties there made the resolved role non-deterministic across requests (could flip admin→operator).
+
+**On the reported "admin switches to operator":** on live Neon the `admin` user has a **single** admin membership, and `/api/me` returns `role:"admin"` consistently (re-verified after deploy, version `9aadc58b`). So the server is NOT downgrading the role for this account — the hardening is latent-bug prevention. The symptom looks **client/session-side** (most likely a lingering operator/`vamshik` session in the same browser profile from earlier testing, given the cross-site `SameSite=None` cookies). Needs a repro (does it survive an incognito window? after refresh? what exactly shows operator?) to pin.
+
+**Verified:** Worker `tsc`, web `tsc`, web `next build` all green (/explore + /review compiled). Worker deployed. Web ships via Vercel on push/merge.
+
+---
+
+## 2026-06-29 — f-149: hybrid retrieval + Voyage rerank-2.5 + soft signals on the match path
+
+Cross-repo session (branch `claude/resume-tailor-job-matching-wr2i3o` in **both** repos). Moves the production profile↔job match path off dense-only cosine onto the validated **dense + lexical(RRF) → rerank → soft-adjust** pipeline, and fixes the filter design. The index side (lexical GIN + `search_jobs_hybrid` RPC) is **f-148** in `fyj_scanner`; this repo is the consumer.
+
+**New pipeline — one orchestrator, every entrypoint.** `src/match.ts` `matchProfile()` is now the single path behind résumé intake (`graph/intake.ts` search node), on-demand `POST /api/profiles/:id/match`, the display `GET /api/profiles/:id/jobs`, and the background `matcher.ts`:
+1. **Hybrid retrieve** — `searchJobsHybrid` (`index-client.ts`) → new `search_jobs_hybrid` RPC: dense (HNSW cosine) + lexical (`ts_rank_cd`) arms, RRF-fused (k=60), returning candidate text + comp + seniority.
+2. **Voyage rerank-2.5** — `src/rerank.ts` (`rerankRelevance`), contract proven in `fyj_scanner/scripts/voyage-vs-openai.mjs`. **Non-fatal**: no `VOYAGE_API_KEY` / error / timeout → keep RRF order. Query = résumé precis; docs = job title+summary.
+3. **Soft adjust** — `seniorityBand()` (coarse bands so the résumé's `mid` no longer zeroes against the index vocab) + comp-floor penalty that **never punishes null comp**. Small weights so the reranker dominates; both annotate `guardrails`.
+
+**Filter design (the spec):** hard filters cut to `closed_at` + `targetOnly` + opt-in `remote` + `since`. `compFloor`/`families`/`seniority` are stripped from the predicates in `matchProfile` and applied softly. `department`/`employment_type`/`industry` stay embedding-only (already true — `fyj_scanner buildJobText` + the summary precis). Embedding model unchanged (`text-embedding-3-small`); Voyage is **rerank-only** → no re-embed.
+
+**DB (no Drizzle migration — reused existing columns + `parsed_profile` jsonb).** `db/policies.sql`: `get_campaign_for_match` now also returns `resume_text` + `parsed_profile` (drop+recreate — return cols changed) so the matcher can build the rerank/lexical queries; `record_campaign_run` accepts optional `fitScore`/`confidence`/`guardrails`, falling back to the cosine-derived band. `repo.recordRun` payload widened. `VOYAGE_API_KEY` (+ optional `VOYAGE_RERANK_MODEL`/`_ENABLED`) added to `worker-configuration.d.ts` + `.dev.vars.example`.
+
+**Verified:** `./init.sh` green — Worker `tsc --noEmit` clean, `db:generate` → "No schema changes, nothing to migrate", web `tsc --noEmit` clean.
+
+**DEPLOYED TO PROD 2026-06-29.** (1) `fyj_scanner` f-148 applied to the index (Supabase `mwcpoaefmggapztkxakp`) — `search_jobs_hybrid` verified live (HTTP 200 via PostgREST, fused dense+lexical rows incl. a lexical-only hit). (2) Voyage `rerank-2.5` key validated. (3) `wrangler secret put VOYAGE_API_KEY` set. (4) `wrangler deploy` succeeded — version `cdca2802-…`, `https://fyj-ops-console.saikiran13055.workers.dev`, hourly cron + `fyj-match` queue, all bindings resolved; Worker boots.
+
+**Neon functions applied + verified.** The two changed `db/policies.sql` functions were applied to Neon and confirmed live: `app.get_campaign_for_match` now RETURNS `(…, resume_text text, parsed_profile jsonb)` and `app.record_campaign_run` accepts the optional rerank fields; grants re-applied. Applied **surgically** (just these two functions, not a full `db:policies` re-run — raw `psql`/TCP is blocked by the sandbox, so used the `@neondatabase/serverless` HTTPS driver through the agent proxy; a full re-apply was avoided to not touch the `ops_app` role/password Hyperdrive depends on). The background cron/queue matcher now has the data it needs (rerank query + lexical query + seniority band) and no longer errors.
+
+**Fully live now:** index `search_jobs_hybrid` (Supabase), Worker (Voyage secret + deployed code), and Neon functions are all in place and mutually consistent.
+
+**What's next:** exercise résumé → reranked matches end-to-end via the UI (operator login) to confirm fit/guardrail chips populate; consider folding the soft seniority/comp signals into the f-136 LLM eval pass.
+
+---
+
 ## 2026-06-26 — f-147 follow-up #2: LIVE root-cause of "tailor does nothing" = waitUntil cancel
 
 Reproduced the "tailor résumé does nothing" report live and captured the cause with `wrangler tail`:

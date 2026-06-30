@@ -1281,6 +1281,22 @@ function CampaignCard({
     }
   }
 
+  async function onDelete() {
+    if (!confirm(`Delete the “${profile.label}” track and its surfaced matches? This can't be undone.`))
+      return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.deleteProfile(profile.id);
+      await reload();
+      await reloadMatches();
+      // card unmounts on reload — no need to clear busy on success
+    } catch (e2) {
+      setErr((e2 as Error).message);
+      setBusy(false);
+    }
+  }
+
   return (
     <Card className="px-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1344,6 +1360,14 @@ function CampaignCard({
         >
           {matching ? "Finding…" : "Find matches"}
         </Button>
+        <button
+          onClick={() => void onDelete()}
+          disabled={busy}
+          title="Delete this track"
+          className="ml-auto px-2 py-1.5 text-sm text-destructive transition-colors hover:bg-muted disabled:opacity-40"
+        >
+          Delete
+        </button>
       </div>
     </Card>
   );

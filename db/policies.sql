@@ -363,24 +363,33 @@ $$;
 
 -- One campaign's matching inputs: its 1:1 profile's embedding (as text — pgvector
 -- has no driver mapping over a raw RPC; the Worker JSON.parses it) + filters +
--- the incremental watermark.
+-- the incremental watermark. f-149 added resume_text + parsed_profile so the
+-- background matcher can build the rerank query (parsed_profile.summary), the
+-- lexical-arm query (parsed_profile.candidate.skills) and the seniority band —
+-- inputs the request-path callers already have in hand but the matcher didn't.
+-- Adding OUT columns changes the return type, which create-or-replace can't do,
+-- hence drop-then-create (idempotent; re-applied every deploy).
+drop function if exists app.get_campaign_for_match(uuid);
 create or replace function app.get_campaign_for_match(p_campaign_id uuid)
   returns table (
     campaign_id uuid, org_id uuid, client_id uuid,
-    last_run_at timestamptz, embedding text, target_filters jsonb
+    last_run_at timestamptz, embedding text, target_filters jsonb,
+    resume_text text, parsed_profile jsonb
   )
   language sql stable security definer set search_path = public, pg_temp as $$
   select c.id, c.org_id, c.client_id, c.last_run_at,
-         p.embedding::text, p.target_filters
+         p.embedding::text, p.target_filters,
+         p.resume_text, p.parsed_profile
   from public.campaigns c
   join public.client_profiles p on p.id = c.profile_id
   where c.id = p_campaign_id
 $$;
 
 -- Surface a run's matches and advance the watermark atomically. p_matches is a
--- jsonb array of {jobId, companyId, score, rank}; org_id/client_id come from the
--- campaign, not the payload. Dedup on (campaign_id, job_id). Always bumps
--- last_run_at, so an empty run still advances the incremental window.
+-- jsonb array of {jobId, companyId, score, rank} and OPTIONALLY {fitScore,
+-- confidence, guardrails} (f-149 Voyage rerank + soft signals); org_id/client_id
+-- come from the campaign, not the payload. Dedup on (campaign_id, job_id). Always
+-- bumps last_run_at, so an empty run still advances the incremental window.
 create or replace function app.record_campaign_run(p_campaign_id uuid, p_matches jsonb)
   returns void language plpgsql security definer set search_path = public, pg_temp as $$
 declare v_org uuid; v_client uuid;
@@ -390,20 +399,31 @@ begin
   if not found then return; end if;
 
   if jsonb_array_length(coalesce(p_matches, '[]'::jsonb)) > 0 then
-    -- fit_score + confidence are derived from the cosine score at surface time
-    -- (0..1 → 0..100, banded). rationale + skill breakdown stay null until the
-    -- LLM eval pass (f-136) fills them.
+    -- fit_score + confidence: use the reranker's values when the caller supplies
+    -- them (f-149), else fall back to the cosine-derived band (0..1 → 0..100;
+    -- 0.82/0.64 thresholds) — so older/dense-only callers behave exactly as
+    -- before. guardrails (soft seniority/comp notes) land in the guardrails
+    -- text[]; rationale + skill breakdown stay null until the f-136 LLM pass.
     insert into public.campaign_matches
-      (org_id, client_id, campaign_id, job_id, company_id, score, rank, fit_score, confidence)
+      (org_id, client_id, campaign_id, job_id, company_id, score, rank, fit_score, confidence, guardrails)
     select v_org, v_client, p_campaign_id,
            (m->>'jobId')::uuid, (m->>'companyId')::uuid,
            (m->>'score')::double precision, (m->>'rank')::int,
-           greatest(0, least(100, round(coalesce((m->>'score')::double precision, 0) * 100)))::smallint,
-           (case
-              when coalesce((m->>'score')::double precision, 0) >= 0.82 then 'high'
-              when coalesce((m->>'score')::double precision, 0) >= 0.64 then 'medium'
-              else 'low'
-            end)::public.match_confidence
+           coalesce(
+             (m->>'fitScore')::int,
+             greatest(0, least(100, round(coalesce((m->>'score')::double precision, 0) * 100)))::int
+           )::smallint,
+           coalesce(
+             nullif(m->>'confidence', '')::public.match_confidence,
+             (case
+                when coalesce((m->>'score')::double precision, 0) >= 0.82 then 'high'
+                when coalesce((m->>'score')::double precision, 0) >= 0.64 then 'medium'
+                else 'low'
+              end)::public.match_confidence
+           ),
+           case when jsonb_typeof(m->'guardrails') = 'array'
+                then array(select jsonb_array_elements_text(m->'guardrails'))
+                else null end
     from jsonb_array_elements(p_matches) as m
     on conflict (campaign_id, job_id) do nothing;
   end if;

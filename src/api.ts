@@ -15,7 +15,8 @@ import {
 } from "./db/schema";
 import { parseResume } from "./resume";
 import { embedText } from "./embeddings";
-import { searchAndHydrate, getJob, searchJobs, type JobFilters } from "./index-client";
+import { getJob, recentJobs, type JobFilters } from "./index-client";
+import { matchProfile } from "./match";
 import { runIntake } from "./graph/intake";
 import { enrichOne } from "./graph/enrich";
 import { tailorResume } from "./graph/tailor";
@@ -561,23 +562,36 @@ export function createApi() {
 
     const campaignId = await repo.ensureCampaign(c.get("db"), p, profile.id, true);
     if (!campaignId) return c.json({ error: "no_campaign" }, 409);
-    // Drop `families` + `seniority` defensively — the index uses controlled
-    // vocabularies for both that our extracted values don't match, zeroing the
-    // search (guards profiles embedded before the f-147 fix; verified live that a
-    // stored `seniority:["mid"]` filter returned 0). Embedding carries that fit.
-    const { families: _df, seniority: _ds, ...tf } = (profile.targetFilters as JobFilters) ?? {};
-    const hits = await searchJobs(c.env, profile.embedding as number[], {
-      ...tf,
-      targetOnly: tf.targetOnly ?? true,
+    // Full pipeline (hybrid retrieve → Voyage rerank → soft adjust). matchProfile
+    // strips compFloor/families/seniority from the hard filters and applies them
+    // as soft signals (so a `mid` seniority no longer zeroes results, and a comp
+    // floor no longer drops the null-comp majority).
+    const parsed = (profile.parsedProfile ?? {}) as {
+      summary?: string;
+      candidate?: { skills?: string[]; seniority?: string | null } | null;
+    };
+    const matches = await matchProfile(c.env, {
+      embedding: profile.embedding as number[],
+      queryText: parsed.summary ?? profile.resumeText ?? "",
+      lexicalQuery: (parsed.candidate?.skills ?? []).join(", ") || null,
+      filters: (profile.targetFilters as JobFilters) ?? { targetOnly: true },
+      profileSeniority: parsed.candidate?.seniority ?? null,
     });
-    const matches = hits
-      .slice(0, 25)
-      .map((m, i) => ({ jobId: m.jobId, companyId: m.companyId, score: m.score, rank: i + 1 }));
     if (matches.length) await repo.recordRun(c.get("db"), p, campaignId, matches);
     c.executionCtx.waitUntil(enrichCampaignBackground(c.env, p, campaignId));
 
     const surfaced = await repo.listMatches(c.get("db"), p, { candidateId: profile.clientId });
     return c.json({ surfaced: matches.length, matches: surfaced });
+  });
+
+  // Delete a track (profile) + its 1:1 campaign and surfaced matches (DB cascade).
+  // RLS (client_profiles staff-write) restricts this to admin/operator with access.
+  app.delete("/api/profiles/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const ok = await repo.deleteProfile(c.get("db"), p, c.req.param("id"));
+    if (!ok) return c.json({ error: "not_found" }, 404);
+    return c.json({ ok: true, id: c.req.param("id") });
   });
 
   // ── index search (f-134) ─────────────────────────────────────────────
@@ -587,22 +601,70 @@ export function createApi() {
     const profile = await repo.getProfile(c.get("db"), c.get("principal"), c.req.param("id"));
     if (!profile) return c.json({ error: "not_found" }, 404);
     if (!profile.embedding) return c.json({ error: "profile_not_embedded" }, 409);
-    const filters: JobFilters = {
-      ...(profile.targetFilters as JobFilters),
-      limit: 50,
+    // Same reranked pipeline as the surfacing paths, then hydrate the ranked refs
+    // for display, so the Jobs view and the campaign matches agree on ordering.
+    const parsed = (profile.parsedProfile ?? {}) as {
+      summary?: string;
+      candidate?: { skills?: string[]; seniority?: string | null } | null;
     };
-    const hits = await searchAndHydrate(c.env, profile.embedding as number[], filters);
+    const ranked = await matchProfile(c.env, {
+      embedding: profile.embedding as number[],
+      queryText: parsed.summary ?? profile.resumeText ?? "",
+      lexicalQuery: (parsed.candidate?.skills ?? []).join(", ") || null,
+      filters: (profile.targetFilters as JobFilters) ?? { targetOnly: true },
+      profileSeniority: parsed.candidate?.seniority ?? null,
+    });
+    const hits = (
+      await Promise.all(
+        ranked.map(async (m) => {
+          const detail = await getJob(c.env, m.jobId, m.companyId).catch(() => null);
+          return detail
+            ? {
+                ...detail,
+                score: m.score,
+                rank: m.rank,
+                fitScore: m.fitScore,
+                confidence: m.confidence,
+                guardrails: m.guardrails,
+              }
+            : null;
+        }),
+      )
+    ).filter((h): h is NonNullable<typeof h> => h !== null);
     return c.json(hits);
   });
 
-  // Ad-hoc text search (dashboard command bar / Jobs free search): embed the
-  // query string on the fly, then the same hydrated index search.
+  // Explore: newest active postings to browse before a query (f-151). Behind the
+  // auth middleware; a plain "newest first" listing, not a search.
+  app.get("/api/jobs/recent", async (c) => {
+    const limit = Math.min(Math.max(Number(c.req.query("limit")) || 30, 1), 100);
+    return c.json(await recentJobs(c.env, limit));
+  });
+
+  // Ad-hoc natural-language job search (Explore / command bar). f-151: routes
+  // through the SAME hybrid (dense + lexical RRF) + Voyage rerank pipeline as
+  // candidate matching — the query doubles as the lexical-arm query (exact skill
+  // tokens) and the rerank query — then hydrates the ranked refs for display.
   app.post("/api/search", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { query?: string; filters?: JobFilters };
     const query = body.query?.trim();
     if (!query) return c.json({ error: "query required" }, 400);
     const { embedding } = await embedText(c.env, query);
-    const hits = await searchAndHydrate(c.env, embedding, { limit: 50, ...(body.filters ?? {}) });
+    const ranked = await matchProfile(c.env, {
+      embedding,
+      queryText: query,
+      lexicalQuery: query,
+      filters: { targetOnly: true, ...(body.filters ?? {}) },
+      profileSeniority: null,
+    });
+    const hits = (
+      await Promise.all(
+        ranked.map(async (m) => {
+          const detail = await getJob(c.env, m.jobId, m.companyId).catch(() => null);
+          return detail ? { ...detail, score: m.score, rank: m.rank, fitScore: m.fitScore } : null;
+        }),
+      )
+    ).filter((h): h is NonNullable<typeof h> => h !== null);
     return c.json(hits);
   });
 
