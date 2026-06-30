@@ -4,6 +4,20 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-29 — f-150: Explore → general job search; Review queue; admin-role hardening
+
+Follow-ups after the f-149 deploy.
+
+**Explore tab is now general NL job search** (was the candidate match-review queue). `web/app/(app)/explore/page.tsx` rebuilt around `api.searchJobs` → `/api/search` (embed query → `searchAndHydrate` over ~169k jobs), `?q=` driven. The match-review queue (approve/decline across the book) was **moved to a new `/review` route** + a "Review" nav item (`components/navbar.tsx`) so the approve→placement/tailoring flow isn't lost. `/jobs` (profile-specific reranked view via `?profile=`) is unchanged.
+
+**Auth: `resolvePrincipal` hardened** (`src/principal.ts`). A multi-membership staff user now defaults to the **highest-privilege role** (admin>operator>viewer) with a stable tiebreak, instead of the oldest-org role — `resolve_staff_memberships` only orders by `created_at`, and ties there made the resolved role non-deterministic across requests (could flip admin→operator).
+
+**On the reported "admin switches to operator":** on live Neon the `admin` user has a **single** admin membership, and `/api/me` returns `role:"admin"` consistently (re-verified after deploy, version `9aadc58b`). So the server is NOT downgrading the role for this account — the hardening is latent-bug prevention. The symptom looks **client/session-side** (most likely a lingering operator/`vamshik` session in the same browser profile from earlier testing, given the cross-site `SameSite=None` cookies). Needs a repro (does it survive an incognito window? after refresh? what exactly shows operator?) to pin.
+
+**Verified:** Worker `tsc`, web `tsc`, web `next build` all green (/explore + /review compiled). Worker deployed. Web ships via Vercel on push/merge.
+
+---
+
 ## 2026-06-29 — f-149: hybrid retrieval + Voyage rerank-2.5 + soft signals on the match path
 
 Cross-repo session (branch `claude/resume-tailor-job-matching-wr2i3o` in **both** repos). Moves the production profile↔job match path off dense-only cosine onto the validated **dense + lexical(RRF) → rerank → soft-adjust** pipeline, and fixes the filter design. The index side (lexical GIN + `search_jobs_hybrid` RPC) is **f-148** in `fyj_scanner`; this repo is the consumer.
