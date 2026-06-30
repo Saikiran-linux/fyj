@@ -23,7 +23,17 @@ export async function resolvePrincipal(
   )) as unknown as Array<{ org_id: string; role: string }>;
 
   if (staff.length > 0) {
-    const m = requestedOrgId ? staff.find((r) => r.org_id === requestedOrgId) : staff[0];
+    // Default org selection prefers the HIGHEST-privilege role (admin > operator >
+    // viewer), not just the oldest org. Otherwise a user who is admin in one org
+    // and operator in another would silently resolve as operator whenever the
+    // request doesn't pin an org — and because resolve_staff_memberships only
+    // orders by org age (ties on created_at are unstable), the resolved role could
+    // even flip between requests. An explicit `requestedOrgId` still wins when it
+    // matches; a stale/unmatched one falls back to the best-role default rather
+    // than failing closed.
+    const rank: Record<string, number> = { admin: 3, operator: 2, viewer: 1 };
+    const byRole = [...staff].sort((a, b) => (rank[b.role] ?? 0) - (rank[a.role] ?? 0));
+    const m = (requestedOrgId && staff.find((r) => r.org_id === requestedOrgId)) || byRole[0];
     if (m && (m.role === "admin" || m.role === "operator" || m.role === "viewer")) {
       return { principal: "staff", userId, orgId: m.org_id, role: m.role };
     }

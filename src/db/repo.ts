@@ -185,6 +185,24 @@ export function getProfile(db: DB, who: Principal, profileId: string) {
   });
 }
 
+// Delete a track (profile) + its 1:1 campaign + surfaced matches (FK cascade).
+// RLS (client_profiles staff-write: admin/operator with can_access_client) gates
+// this — a forbidden/unknown id simply deletes zero rows → false (the API 404s).
+// Unlike client_profiles' SELECT policy, the predicate reads `clients`, not the
+// row being deleted, so DELETE … RETURNING is safe here (no self-referential
+// re-query gotcha like createClient/deleteClient document).
+export function deleteProfile(db: DB, who: Principal, profileId: string): Promise<boolean> {
+  return withTenant(db, who, async (tx) => {
+    const deleted = await tx
+      .delete(clientProfiles)
+      .where(eq(clientProfiles.id, profileId))
+      .returning({ id: clientProfiles.id });
+    const ok = deleted.length > 0;
+    if (ok) await audit(tx, who, "profile.delete", "client_profile", profileId, {});
+    return ok;
+  });
+}
+
 // Persist a parsed+embedded resume onto its profile (f-134). The embedding is
 // what the index search_jobs RPC queries against; embeddedAt flips the UI's
 // "needs embed" → "embedded" and makes the profile matchable.
@@ -602,7 +620,19 @@ export function listMatches(
         sql`${campaignMatches.fitScore} desc nulls last, ${campaignMatches.score} desc nulls last`,
       )
       .limit(filters.limit ?? 100);
-    return rows.map((r) => ({ ...r, surfacedAt: new Date(r.surfacedAt).toISOString() }));
+    // Collapse the SAME job surfaced for the SAME candidate by more than one track
+    // (two similar profiles/campaigns surface overlapping jobs). Rows are already
+    // ordered best-fit first, so keeping the first occurrence per (client, job)
+    // keeps the strongest one. Different candidates matching the same job stay
+    // separate (keyed on clientId), as do the same job for one candidate is shown once.
+    const seen = new Set<string>();
+    const deduped = rows.filter((r) => {
+      const key = `${r.clientId}:${r.jobId}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return deduped.map((r) => ({ ...r, surfacedAt: new Date(r.surfacedAt).toISOString() }));
   });
 }
 
@@ -678,12 +708,24 @@ export function ensureCampaign(db: DB, who: Principal, profileId: string, activa
   });
 }
 
-/** Surface index matches onto a campaign (dedup in DB), deriving org/client there. */
+/**
+ * Surface index matches onto a campaign (dedup in DB), deriving org/client there.
+ * `fitScore`/`confidence`/`guardrails` are optional (f-149 rerank + soft signals);
+ * when omitted, app.record_campaign_run falls back to the cosine-derived band.
+ */
 export function recordRun(
   db: DB,
   who: Principal,
   campaignId: string,
-  matches: Array<{ jobId: string; companyId: string; score: number; rank: number }>,
+  matches: Array<{
+    jobId: string;
+    companyId: string;
+    score: number;
+    rank: number;
+    fitScore?: number;
+    confidence?: MatchConfidence;
+    guardrails?: string[];
+  }>,
 ) {
   return withTenant(db, who, (tx) =>
     tx.execute(

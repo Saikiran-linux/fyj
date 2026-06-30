@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
   Compass,
+  Inbox,
   Users,
   Calendar,
   ChevronDown,
@@ -24,6 +25,7 @@ import { cn } from "@/lib/utils";
 const NAV: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/explore", label: "Explore", icon: Compass },
+  { href: "/review", label: "Review", icon: Inbox },
   { href: "/clients", label: "Candidates", icon: Users },
   { href: "/calendar", label: "Calendar", icon: Calendar },
 ];

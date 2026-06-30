@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { DB } from "./db/client";
-import { searchJobs, type JobFilters } from "./index-client";
+import { type JobFilters } from "./index-client";
+import { matchProfile } from "./match";
 
 /**
  * Continuous matcher (f-135). Runs in the cron + queue handlers, NOT on the
@@ -30,9 +31,11 @@ export async function runCampaignMatch(
   env: Env,
   job: MatchJob,
 ): Promise<{ surfaced: number }> {
-  // 1. Load the campaign + its 1:1 profile (embedding + filters + watermark).
+  // 1. Load the campaign + its 1:1 profile (embedding + filters + watermark, plus
+  //    the résumé precis + extracted skills/seniority the reranker needs — f-149).
   const rows = (await db.execute(
-    sql`select campaign_id, org_id, client_id, last_run_at, embedding, target_filters
+    sql`select campaign_id, org_id, client_id, last_run_at, embedding, target_filters,
+               resume_text, parsed_profile
         from app.get_campaign_for_match(${job.campaignId})`,
   )) as unknown as Array<{
     campaign_id: string;
@@ -41,6 +44,11 @@ export async function runCampaignMatch(
     last_run_at: string | null;
     embedding: string | null; // pgvector serialized as "[a,b,c]"
     target_filters: JobFilters | null;
+    resume_text: string | null;
+    parsed_profile: {
+      summary?: string;
+      candidate?: { skills?: string[]; seniority?: string | null } | null;
+    } | null;
   }>;
 
   const row = rows[0];
@@ -48,30 +56,31 @@ export async function runCampaignMatch(
   // watermark, so the first jobs aren't skipped once the profile is embedded.
   if (!row || !row.embedding) return { surfaced: 0 };
 
-  // 2. Incremental search against the index — only jobs newer than last run.
+  // 2. Incremental match against the index — only jobs newer than last run. The
+  //    full pipeline (hybrid retrieve → rerank → soft adjust) lives in
+  //    matchProfile; it strips compFloor/families/seniority from the hard filters
+  //    and applies them as soft signals, so we just pass targeting + the `since`
+  //    watermark through.
   const embedding = JSON.parse(row.embedding) as number[];
-  // Drop `families` + `seniority` — the index uses controlled vocabularies for
-  // both that our extracted values don't match, which zeroes results (see f-141
-  // intake notes + the f-147 live finding that a "mid" seniority filter returned
-  // 0). Guards profiles embedded before the fix; embedding carries that fit.
-  const { families: _df, seniority: _ds, ...tf } = row.target_filters ?? {};
+  const parsed = row.parsed_profile ?? {};
   const filters: JobFilters = {
-    ...tf,
+    ...(row.target_filters ?? {}),
     since: row.last_run_at ? new Date(row.last_run_at).toISOString() : undefined,
-    targetOnly: tf.targetOnly ?? true,
+    targetOnly: row.target_filters?.targetOnly ?? true,
   };
-  const matches = await searchJobs(env, embedding, filters);
+  const matches = await matchProfile(env, {
+    embedding,
+    queryText: parsed.summary ?? row.resume_text ?? "",
+    lexicalQuery: (parsed.candidate?.skills ?? []).join(", ") || null,
+    filters,
+    profileSeniority: parsed.candidate?.seniority ?? null,
+  });
 
   // 3. Surface matches + bump the watermark atomically (dedup in the DB on
-  //    (campaign_id, job_id)). org_id/client_id are derived from the campaign.
-  const payload = matches.map((m, i) => ({
-    jobId: m.jobId,
-    companyId: m.companyId,
-    score: m.score,
-    rank: i + 1,
-  }));
+  //    (campaign_id, job_id)). org_id/client_id are derived from the campaign;
+  //    fitScore/confidence/guardrails ride the payload (f-149).
   await db.execute(
-    sql`select app.record_campaign_run(${job.campaignId}, ${JSON.stringify(payload)}::jsonb)`,
+    sql`select app.record_campaign_run(${job.campaignId}, ${JSON.stringify(matches)}::jsonb)`,
   );
   return { surfaced: matches.length };
 }
