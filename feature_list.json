@@ -205,6 +205,14 @@
       "dependencies": ["f-139", "f-149"],
       "status": "done",
       "evidence": "Gates green: Worker `tsc --noEmit`, web `tsc --noEmit`, web `next build` (both /explore and /review routes compiled). Worker DEPLOYED (version 9aadc58b-d852-4a38-b7a7-4ba0978f95b5); admin login verified to resolve role=admin via /api/me post-deploy. Web changes (Explore/Review/navbar) ship via Vercel on push/merge. NOTE on the reported admin->operator switch: on live Neon the `admin` account has a SINGLE admin membership, so the server resolves admin consistently (re-verified) — the resolvePrincipal change is latent-bug prevention; the reported symptom looks client/session-side (e.g. a lingering operator session in the same browser) and needs a repro to pin."
+    },
+    {
+      "id": "f-151",
+      "name": "Explore browse-by-default + reranked search; match dedup; delete track",
+      "description": "Explore polish + two fixes. (1) Explore now BROWSES the newest postings by default (no query) via a new index RPC recent_jobs(filters) -> /api/jobs/recent; a query runs hybrid+rerank search. Dropped candidate-fit framing (no % match chip / rationale) — it's job discovery, not candidate scoring. (2) /api/search rewired through the SAME hybrid (dense+lexical RRF) + Voyage rerank pipeline as candidate matching (query doubles as lexical-arm + rerank query), then hydrates. (3) repo.listMatches dedups by (clientId, jobId) so two similar tracks don't show the same job multiple times in the candidate matches tab / review queue. (4) Delete-track: repo.deleteProfile + DELETE /api/profiles/:id (RLS client_profiles staff-write + cascade) + a Delete button on the CampaignCard.",
+      "dependencies": ["f-148", "f-149", "f-150"],
+      "status": "done",
+      "evidence": "Index: recent_jobs RPC applied to Supabase mwcpoaefmggapztkxakp (migration f151_recent_jobs). Worker DEPLOYED (version ce8cb40a-331a-4608-bc38-babdc136c504) + verified live via admin session: /api/jobs/recent returns newest postings (first_seen desc); /api/search returns 25 reranked hits (Senior Data Engineer roles top for a data-eng query); DELETE /api/profiles/<bogus> -> 404 (route live, RLS-safe). Gates: Worker tsc, web tsc, web next build all green. Web (Explore browse/search + delete button) ships via Vercel."
     }
   ]
 }

@@ -227,3 +227,56 @@ export async function searchAndHydrate(
   );
   return hits.filter((h): h is JobHit => h !== null);
 }
+
+/**
+ * Newest active postings, no query (f-151) — powers the Explore tab's default
+ * browse view. Calls the recent_jobs RPC (ordered by first_seen_at desc) and
+ * shapes rows into JobHit. `score` is 0 (there's nothing to score against — this
+ * is a listing, not a search); `rank` is the listing position.
+ */
+export async function recentJobs(env: Env, limit = 30): Promise<JobHit[]> {
+  const res = await fetchWithTimeout(`${env.FYJ_INDEX_URL}/rest/v1/rpc/recent_jobs`, {
+    method: "POST",
+    headers: headers(env),
+    body: JSON.stringify({ filters: { limit } }),
+  });
+  if (!res.ok) throw new Error(`recent_jobs ${res.status}: ${await res.text()}`);
+  const rows = (await res.json()) as Array<{
+    job_id: string;
+    company_id: string;
+    title: string;
+    company: string;
+    location: string | null;
+    url: string | null;
+    description: string | null;
+    source: string | null;
+    posted_at: string | null;
+    comp_min: number | null;
+    comp_max: number | null;
+    comp_currency: string | null;
+    comp_interval: string | null;
+    comp_text: string | null;
+    workplace: string | null;
+    employment_type: string | null;
+  }>;
+  return rows.map((r, i) => ({
+    jobId: r.job_id,
+    companyId: r.company_id,
+    title: r.title,
+    company: r.company,
+    location: r.location,
+    url: r.url,
+    description: r.description,
+    workplace: r.workplace,
+    employmentType: r.employment_type,
+    source: r.source,
+    postedAt: r.posted_at,
+    compMin: r.comp_min,
+    compMax: r.comp_max,
+    compCurrency: r.comp_currency,
+    compInterval: r.comp_interval,
+    compText: r.comp_text,
+    score: 0,
+    rank: i + 1,
+  }));
+}

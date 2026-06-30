@@ -143,6 +143,9 @@ export const api = {
     id: string,
     input: { autopilot?: boolean; targetFilters?: Record<string, unknown> },
   ) => req<ClientProfile>(`/api/profiles/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  // Delete a track (profile) + its campaign/matches (admin/operator with access).
+  deleteProfile: (id: string) =>
+    req<{ ok: true; id: string }>(`/api/profiles/${id}`, { method: "DELETE" }),
   // Save operator edits to the résumé-extracted Experience / Skills sections (f-146).
   updateProfileExtraction: (
     id: string,
@@ -170,6 +173,9 @@ export const api = {
   profileJobs: (profileId: string) => req<JobHit[]>(`/api/profiles/${profileId}/jobs`),
   searchJobs: (query: string) =>
     req<JobHit[]>("/api/search", { method: "POST", body: JSON.stringify({ query }) }),
+  // Newest active postings (Explore default browse view, f-151).
+  recentJobs: (limit?: number) =>
+    req<JobHit[]>(`/api/jobs/recent${limit ? `?limit=${limit}` : ""}`),
 
   listCampaignMatches: (campaignId: string) =>
     req<CampaignMatch[]>(`/api/campaigns/${campaignId}/matches`),

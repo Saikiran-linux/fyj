@@ -15,7 +15,7 @@ import {
 } from "./db/schema";
 import { parseResume } from "./resume";
 import { embedText } from "./embeddings";
-import { searchAndHydrate, getJob, type JobFilters } from "./index-client";
+import { getJob, recentJobs, type JobFilters } from "./index-client";
 import { matchProfile } from "./match";
 import { runIntake } from "./graph/intake";
 import { enrichOne } from "./graph/enrich";
@@ -584,6 +584,16 @@ export function createApi() {
     return c.json({ surfaced: matches.length, matches: surfaced });
   });
 
+  // Delete a track (profile) + its 1:1 campaign and surfaced matches (DB cascade).
+  // RLS (client_profiles staff-write) restricts this to admin/operator with access.
+  app.delete("/api/profiles/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const ok = await repo.deleteProfile(c.get("db"), p, c.req.param("id"));
+    if (!ok) return c.json({ error: "not_found" }, 404);
+    return c.json({ ok: true, id: c.req.param("id") });
+  });
+
   // ── index search (f-134) ─────────────────────────────────────────────
   // Match a profile's embedding against the index, hydrated for display. The
   // embedding is a tenant resource, so it's read through the repository (RLS).
@@ -624,14 +634,37 @@ export function createApi() {
     return c.json(hits);
   });
 
-  // Ad-hoc text search (dashboard command bar / Jobs free search): embed the
-  // query string on the fly, then the same hydrated index search.
+  // Explore: newest active postings to browse before a query (f-151). Behind the
+  // auth middleware; a plain "newest first" listing, not a search.
+  app.get("/api/jobs/recent", async (c) => {
+    const limit = Math.min(Math.max(Number(c.req.query("limit")) || 30, 1), 100);
+    return c.json(await recentJobs(c.env, limit));
+  });
+
+  // Ad-hoc natural-language job search (Explore / command bar). f-151: routes
+  // through the SAME hybrid (dense + lexical RRF) + Voyage rerank pipeline as
+  // candidate matching — the query doubles as the lexical-arm query (exact skill
+  // tokens) and the rerank query — then hydrates the ranked refs for display.
   app.post("/api/search", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { query?: string; filters?: JobFilters };
     const query = body.query?.trim();
     if (!query) return c.json({ error: "query required" }, 400);
     const { embedding } = await embedText(c.env, query);
-    const hits = await searchAndHydrate(c.env, embedding, { limit: 50, ...(body.filters ?? {}) });
+    const ranked = await matchProfile(c.env, {
+      embedding,
+      queryText: query,
+      lexicalQuery: query,
+      filters: { targetOnly: true, ...(body.filters ?? {}) },
+      profileSeniority: null,
+    });
+    const hits = (
+      await Promise.all(
+        ranked.map(async (m) => {
+          const detail = await getJob(c.env, m.jobId, m.companyId).catch(() => null);
+          return detail ? { ...detail, score: m.score, rank: m.rank, fitScore: m.fitScore } : null;
+        }),
+      )
+    ).filter((h): h is NonNullable<typeof h> => h !== null);
     return c.json(hits);
   });
 

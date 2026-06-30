@@ -4,6 +4,17 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-06-29 — f-151: Explore browse-by-default + reranked search; match dedup; delete track
+
+- **Explore browses newest jobs by default** (no query): new index RPC `recent_jobs(filters)` (newest active, applied to Supabase as `f151_recent_jobs`) → `/api/jobs/recent` → `index-client.recentJobs` → Explore default view. A query runs hybrid+rerank search. **Dropped all candidate-fit framing** from Explore (no "% match" chip / rationale) — it's job discovery.
+- **`/api/search` now goes through hybrid + Voyage rerank** (the same `matchProfile` pipeline as candidate matching; the NL query doubles as the lexical-arm query and the rerank query), then hydrates. Verified: "remote senior data engineer python aws spark" → Senior Data Engineer roles on top.
+- **Match dedup** (`repo.listMatches`): collapse rows by `(clientId, jobId)` keeping best fit, so two similar tracks no longer show the same job multiple times in the candidate Matches tab / Review queue.
+- **Delete track**: `repo.deleteProfile` + `DELETE /api/profiles/:id` (RLS `client_profiles` staff-write + FK cascade to campaign/matches) + a **Delete** button on the CampaignCard (Tracks tab, with confirm).
+- **Verified live** (Worker `ce8cb40a`, admin session): recent jobs, reranked search, delete route (404 on bogus id). Gates: Worker tsc + web tsc + `next build` green.
+- ⚠️ **Web deploy:** these UI changes (and f-150's Explore/Review) only reach the user once **Vercel deploys** — Vercel tracks the production branch, so the feature branch must be merged/deployed. The Worker + index are already live.
+
+---
+
 ## 2026-06-29 — f-150: Explore → general job search; Review queue; admin-role hardening
 
 Follow-ups after the f-149 deploy.
