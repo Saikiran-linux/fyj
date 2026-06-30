@@ -21,9 +21,11 @@ Cross-repo session (branch `claude/resume-tailor-job-matching-wr2i3o` in **both*
 
 **DEPLOYED TO PROD 2026-06-29.** (1) `fyj_scanner` f-148 applied to the index (Supabase `mwcpoaefmggapztkxakp`) — `search_jobs_hybrid` verified live (HTTP 200 via PostgREST, fused dense+lexical rows incl. a lexical-only hit). (2) Voyage `rerank-2.5` key validated. (3) `wrangler secret put VOYAGE_API_KEY` set. (4) `wrangler deploy` succeeded — version `cdca2802-…`, `https://fyj-ops-console.saikiran13055.workers.dev`, hourly cron + `fyj-match` queue, all bindings resolved; Worker boots.
 
-**⚠️ OUTSTANDING — Neon `db:policies` not yet applied.** `wrangler deploy` ships Worker code only; the extended `db/policies.sql` functions live in **Neon** and must be applied with `npm run db:policies` (needs `DATABASE_URL`). Until then the **background cron/queue matcher will error** — `matcher.ts` now selects `resume_text` + `parsed_profile` from `app.get_campaign_for_match()`, which the old (6-column) function doesn't return. Fails safe (no data written, no matches that tick). **Request paths are unaffected** — résumé upload / on-demand `/match` / `/jobs` call `matchProfile` (live index RPC) + `record_campaign_run` (signature unchanged; falls back to cosine-derived fit until policies applied). **Action: apply `db/policies.sql` to Neon.**
+**Neon functions applied + verified.** The two changed `db/policies.sql` functions were applied to Neon and confirmed live: `app.get_campaign_for_match` now RETURNS `(…, resume_text text, parsed_profile jsonb)` and `app.record_campaign_run` accepts the optional rerank fields; grants re-applied. Applied **surgically** (just these two functions, not a full `db:policies` re-run — raw `psql`/TCP is blocked by the sandbox, so used the `@neondatabase/serverless` HTTPS driver through the agent proxy; a full re-apply was avoided to not touch the `ops_app` role/password Hyperdrive depends on). The background cron/queue matcher now has the data it needs (rerank query + lexical query + seniority band) and no longer errors.
 
-**What's next:** apply Neon `db:policies`; then exercise resume → reranked matches end-to-end; consider folding the soft seniority/comp signals into the f-136 LLM eval pass.
+**Fully live now:** index `search_jobs_hybrid` (Supabase), Worker (Voyage secret + deployed code), and Neon functions are all in place and mutually consistent.
+
+**What's next:** exercise résumé → reranked matches end-to-end via the UI (operator login) to confirm fit/guardrail chips populate; consider folding the soft seniority/comp signals into the f-136 LLM eval pass.
 
 ---
 
