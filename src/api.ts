@@ -732,9 +732,20 @@ export function createApi() {
     // so the cold-cache draft→critique→revise chain runs in a full queue
     // invocation instead of being cancelled by the short post-response budget
     // (which left the résumé stuck "pending" — f-147 live finding).
-    if (hasAnthropic(c.env))
-      c.executionCtx.waitUntil(c.env.MATCH_QUEUE.send({ kind: "tailor", matchId, principal: p }));
-    return c.json({ ...result, tailoring: hasAnthropic(c.env) });
+    //
+    // Only kick it once: if this match already HAS a tailored résumé we must not
+    // regenerate it — re-approving (matches reappear after a reload) would upsert
+    // over the stored one and wipe any operator edits. The drawer shows the saved
+    // résumé via GET; an explicit "Regenerate" is the way to deliberately redo it.
+    let tailoring = false;
+    if (hasAnthropic(c.env)) {
+      const existing = await repo.getTailoredResume(c.get("db"), p, matchId);
+      if (!existing) {
+        c.executionCtx.waitUntil(c.env.MATCH_QUEUE.send({ kind: "tailor", matchId, principal: p }));
+        tailoring = true;
+      }
+    }
+    return c.json({ ...result, tailoring });
   });
 
   // Kick (or re-kick) résumé tailoring for a match WITHOUT changing its action —

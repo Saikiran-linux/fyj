@@ -60,16 +60,6 @@
       "evidence": "Implemented on branch claude/bold-cori-miypka. Resolved the ops_system-not-BYPASSRLS blocker via SECURITY DEFINER (chosen by user over pursuing BYPASSRLS): db/policies.sql adds app.list_active_campaigns(), app.get_campaign_for_match(uuid) (returns embedding::text — pgvector has no raw-RPC driver mapping), app.record_campaign_run(uuid, jsonb) (inserts campaign_matches on conflict (campaign_id,job_id) do nothing + bumps last_run_at atomically; org_id/client_id derived from the campaign, never the payload). All owner-owned/RLS-exempt (file already forbids FORCE RLS for exactly this), granted to ops_app+ops_system. src/matcher.ts rewritten to call these over the existing ops_app Hyperdrive connection (no second binding / no BYPASSRLS role); cron enqueues active campaigns, queue consumer matches each incrementally (since=last_run_at, targetOnly default true). GATES GREEN: ./init.sh (Worker typecheck + db:generate unchanged + web typecheck), wrangler dry-run bundles. NOT runtime-verified (no Neon/CF creds this session): db/policies.sql must be re-applied to Neon for the new app.* fns, and the Worker redeployed, before the cron actually surfaces matches. DEPLOYED LIVE 2026-06-20: db/policies.sql applied to prod Neon via the Neon serverless WS driver (5432 is blocked in the ops container; HTTPS only) — all 3 app.* fns now exist with prosecdef=true and execute granted to ops_app+ops_system; Worker redeployed (version ce041109, cron 17 * * * * armed). Runtime-verified: non-BYPASSRLS ops_app role successfully executes app.list_active_campaigns() (0 active campaigns yet). Cron is a no-op until a campaign is activated and its profile embedded."
     },
     {
-      "id": "f-136",
-      "name": "Deep eval (A-G) + CV tailor + tracker",
-      "description": "On-demand Sonnet/Opus A-G report (prompt-cached) writing reports; multi-agent CV-tailor -> PDF; placements kanban (Tracker screen).",
-      "dependencies": [
-        "f-135"
-      ],
-      "status": "not-started",
-      "evidence": ""
-    },
-    {
       "id": "f-137",
       "name": "Client portal + feedback loop",
       "description": "Read-only client portal (own pipeline) + feedback insert-only (RLS already enforces both principals); feedback signal tunes target_filters.",
@@ -84,7 +74,6 @@
       "name": "Billing + daily digests",
       "description": "Usage/billing + Resend daily digest at the operator/client configured time.",
       "dependencies": [
-        "f-136",
         "f-137"
       ],
       "status": "not-started",
