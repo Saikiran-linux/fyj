@@ -151,7 +151,9 @@ export const clientProfiles = pgTable(
     resumeText: text("resume_text"),
     parsedProfile: jsonb("parsed_profile"),
     // pgvector — used to query the index's HNSW; no local ANN index needed.
-    embedding: vector("embedding", { dimensions: 1536 }),
+    // 1024d Voyage voyage-4-large, matching the job index (f-152; was 1536d
+    // OpenAI text-embedding-3-small).
+    embedding: vector("embedding", { dimensions: 1024 }),
     embeddingModel: text("embedding_model"),
     embeddedAt: timestamp("embedded_at", { withTimezone: true }),
     targetFilters: jsonb("target_filters").notNull().default(sql`'{}'::jsonb`),

@@ -56,7 +56,8 @@
 - [ ] `BETTER_AUTH_URL` — the deployed Worker origin (e.g. `https://ops-api.fyj.app`) / `http://localhost:8787` locally
 - [ ] `FYJ_INDEX_URL` — `https://mwcpoaefmggapztkxakp.supabase.co`
 - [ ] `FYJ_INDEX_KEY` — a Supabase key authorized to call `search_jobs`/`get_job`
-- [ ] `OPENAI_API_KEY` — profile resume embeddings (f-134)
+- [ ] `VOYAGE_API_KEY` — profile resume embeddings (f-134, moved from OpenAI in f-152) + rerank (f-149)
+- [ ] `OPENAI_API_KEY` — intake extraction + résumé precis (gpt-4o-mini, f-141) — no longer used for embeddings
 - [ ] `ANTHROPIC_API_KEY` — deep eval / CV (f-136)
 - [ ] `ADMIN_BOOTSTRAP_SECRET` — shared secret guarding `POST /api/seed/org-admin` (f-140). Pick a
       long random value (`openssl rand -base64 32`); required only to mint the first org + admin.

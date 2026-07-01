@@ -14,10 +14,12 @@ interface Env {
   WEB_ORIGIN: string;
   OPENAI_API_KEY: string;
   ANTHROPIC_API_KEY: string;
-  // Voyage reranker (f-149). Optional — rerank is NON-FATAL: with VOYAGE_API_KEY
-  // absent (or VOYAGE_RERANK_ENABLED=0/false/no) matching keeps the RRF/cosine
-  // order. Set the key via `wrangler secret put VOYAGE_API_KEY`; model defaults to
-  // rerank-2.5 (override with VOYAGE_RERANK_MODEL).
+  // Voyage: embeddings (f-134/f-152, src/embeddings.ts — voyage-4-large, 1024d;
+  // HARD dependency, embed() throws without it) + reranker (f-149, src/rerank.ts
+  // — NON-FATAL: with VOYAGE_API_KEY absent, or VOYAGE_RERANK_ENABLED=0/false/no,
+  // matching keeps the RRF/cosine order instead). Set via
+  // `wrangler secret put VOYAGE_API_KEY`; rerank model defaults to rerank-2.5
+  // (override with VOYAGE_RERANK_MODEL).
   VOYAGE_API_KEY?: string;
   VOYAGE_RERANK_MODEL?: string;
   VOYAGE_RERANK_ENABLED?: string;

@@ -46,7 +46,7 @@ Enforced by **Postgres RLS on Neon**, not app code:
 4. **RLS + roles** — `DATABASE_URL=<direct> npm run db:policies` (creates `ops_app`/`ops_system`, RLS, helpers). Set their passwords in Neon.
 5. **Hyperdrive** — `wrangler hyperdrive create fyj-ops --connection-string="<pooled, as ops_app>"`; paste the id into `wrangler.jsonc`.
 6. **R2 / KV / Queue** — create `fyj-resumes`, a KV namespace, and the `fyj-match` queue; fill the ids in `wrangler.jsonc`.
-7. **Secrets** — `wrangler secret put BETTER_AUTH_SECRET` (and `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FYJ_INDEX_URL`, `FYJ_INDEX_KEY`). Local dev: copy `.dev.vars.example` → `.dev.vars`.
+7. **Secrets** — `wrangler secret put BETTER_AUTH_SECRET` (and `VOYAGE_API_KEY` for embeddings+rerank, `OPENAI_API_KEY` for intake extraction/summarize, `ANTHROPIC_API_KEY`, `FYJ_INDEX_URL`, `FYJ_INDEX_KEY`). Local dev: copy `.dev.vars.example` → `.dev.vars`.
 8. **Types** — `npm run cf-typegen` (regenerates `worker-configuration.d.ts` from bindings).
 9. **Run** — `npm run dev`; **deploy** — `npm run deploy`.
 
