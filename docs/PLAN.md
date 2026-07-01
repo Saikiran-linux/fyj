@@ -130,7 +130,7 @@ hydrated from the index via API. `users` is the Better Auth users table (our Neo
 | `organizations` | id, name, slug, plan, created_at |
 | `memberships` | org_id, user_id→`users`, role(admin\|operator\|viewer), status, created_at |
 | `clients` | org_id, **assigned_operator_id**→`users`, **auth_user_id**→`users` (nullable, set on portal invite), full_name, contact, status(active\|paused\|placed\|archived), **portal_enabled** bool default false, **portal_permissions** jsonb, notes |
-| `client_profiles` | org_id, client_id, label, resume_storage_path (R2 key), resume_text, **parsed_profile** jsonb, **embedding** vector(1536) (pgvector on Neon; used to query the index — no local ANN index needed), embedded_at, **target_filters** jsonb (titles[], locations, remote, comp_floor, seniority, families, target_only) |
+| `client_profiles` | org_id, client_id, label, resume_storage_path (R2 key), resume_text, **parsed_profile** jsonb, **embedding** vector(1024) (pgvector on Neon; used to query the index — no local ANN index needed), embedded_at, **target_filters** jsonb (titles[], locations, remote, comp_floor, seniority, families, target_only) |
 | `campaigns` | org_id, client_id, **profile_id UNIQUE**, name, status(draft\|active\|paused\|completed), config jsonb, last_run_at, next_run_at, created_by |
 | `campaign_matches` | org_id, client_id, campaign_id, **job_id + company_id** (refs the index, no FK), score, rank, surfaced_at, **action**(new\|saved\|shortlisted\|dismissed\|evaluated\|applied), action_by, action_at, notes · **UNIQUE(campaign_id, job_id)** |
 | `reports` | org_id, client_id, campaign_match_id, model, scores jsonb (A–G), full_markdown, cv_pdf_url, generated_by, generated_at |
@@ -154,7 +154,7 @@ Everything below runs in **Cloudflare Workers**; the job index is reached via th
 `search_jobs`/`get_job` RPC over HTTPS (or a second Hyperdrive binding). The index is never written.
 
 ```
-Worker: profile.resume_text ─(OpenAI/Voyage embed)→ profile.embedding   (stored in Neon)
+Worker: profile.resume_text ─(Voyage voyage-4-large embed)→ profile.embedding   (stored in Neon)
 campaign run (Worker) ─→ POST search_jobs(profile.embedding, target_filters)  [index RPC, f-114]
                       ─→ (optional) reranker                                  [f-122]
                       ─→ upsert campaign_matches in Neon (job_id+company_id refs)
@@ -204,7 +204,7 @@ Separate repo. Stack:
 | Matcher | **Workers Cron Triggers + Queues** |
 | Job-detail cache | **Workers KV** |
 | Job index | **Supabase Postgres** (read-only via `search_jobs`/`get_job` RPC over HTTPS) |
-| LLM | Anthropic API (deep-eval, CV) + OpenAI/Voyage (embeddings), called from Workers |
+| LLM | Anthropic API (deep-eval, CV) + OpenAI (gpt-4o-mini extraction/summarize) + Voyage (embeddings + rerank), called from Workers |
 
 - **Tenant safety:** a mandatory Drizzle repository layer that injects `org_id` scoping + sets the
   per-request `SET LOCAL app.*` GUCs; the Worker DB role is non-superuser (RLS enforced). RLS is
