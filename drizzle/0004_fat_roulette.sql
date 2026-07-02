@@ -1,0 +1,1 @@
+ALTER TABLE "client_profiles" ALTER COLUMN "embedding" SET DATA TYPE vector(1024);

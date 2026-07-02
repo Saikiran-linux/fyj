@@ -151,7 +151,9 @@ export const clientProfiles = pgTable(
     resumeText: text("resume_text"),
     parsedProfile: jsonb("parsed_profile"),
     // pgvector — used to query the index's HNSW; no local ANN index needed.
-    embedding: vector("embedding", { dimensions: 1536 }),
+    // 1024 dims = Voyage voyage-4-large (f-152), matching the fyj index + the
+    // ops-console embedder (src/embeddings.ts). Must equal the live column.
+    embedding: vector("embedding", { dimensions: 1024 }),
     embeddingModel: text("embedding_model"),
     embeddedAt: timestamp("embedded_at", { withTimezone: true }),
     targetFilters: jsonb("target_filters").notNull().default(sql`'{}'::jsonb`),

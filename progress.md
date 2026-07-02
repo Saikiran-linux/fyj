@@ -4,6 +4,135 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-07-02 — Embedding pipeline: OpenAI 1536 → Voyage voyage-4-large 1024 (index drift fix)
+
+Root-caused why matching was dark (beyond the NULL embeddings): the **index
+(fyj_scanner f-152) migrated jobs to Voyage `voyage-4-large` @ 1024-d**
+(`input_type='document'`) and the **live Neon `client_profiles.embedding` column
+was already `vector(1024)`** — but the ops-console still embedded résumés with
+**OpenAI `text-embedding-3-small` @ 1536**. Wrong model AND wrong dim. The 1024
+column migration is what had wiped the old 1536 vectors → the NULLs. Discovered
+when the OpenAI backfill hit `expected 1024 dimensions, not 1536`.
+
+- **`src/embeddings.ts`** → Voyage `voyage-4-large`, `output_dimension: 1024`,
+  `input_type: 'query'` (the asymmetric-retrieval pair to the index's
+  `'document'` side). Direct to Voyage (not a gateway provider); reuses the
+  existing `VOYAGE_API_KEY` Worker secret. `embedRaw`/`embedText` signatures
+  unchanged → intake/search callers untouched.
+- **`src/db/schema.ts`** → `vector("embedding", { dimensions: 1024 })`;
+  `drizzle-kit generate` → `drizzle/0004_fat_roulette.sql` (single
+  `ALTER … SET DATA TYPE vector(1024)`). Prod column is ALREADY 1024, so the
+  migration is a no-op there (recorded on the next `drizzle-kit migrate`); the
+  file + snapshot now match reality for fresh setups.
+- **Backfilled the 3 profiles** via the Voyage query path (from stored
+  `parsed_profile.summary`, verbatim). Validated each new vector against the live
+  `search_jobs` → **top cosine 0.72–0.74** (vs the old 0.01 garbage). All 3 now
+  `has_vec` + `embedding_model='voyage-4-large'` (fixed a backfill label bug that
+  first wrote the stale OpenAI model string — vectors were always correct Voyage).
+- **Deployed** Worker version `d0f2872f` (Voyage embed path live for new
+  uploads/queries). `/health` 200.
+- **NOTE / next**: the 3 active campaigns still carry `last_run_at = 07-01
+  00:18`, and the matcher is INCREMENTAL (`since=last_run_at`), so the hourly
+  cron only surfaces jobs newer than that — it will NOT re-surface the full pool
+  against the corrected embeddings on its own. The old 58 `campaign_matches`
+  (some `shortlisted`) were computed with the broken vectors and are now stale.
+  Deferred as a product call: whether to reset `last_run_at` (force a fresh
+  incremental surface) and/or clear the stale matches. On-demand "Find matches"
+  (no `since`) surfaces the full top-25 immediately for any profile.
+
+---
+
+## 2026-07-01 — Observability: Sentry + PostHog + LangSmith + CF AI Gateway (env-gated)
+
+Full-platform observability wired across Worker + web (and fyj_scanner in its own
+repo). EVERYTHING is optional/env-gated (the Voyage pattern): with no keys set,
+behavior is byte-identical to before. New module: `src/observability.ts`.
+
+- **Sentry (errors + cron/queue health)** — `@sentry/cloudflare`: `withSentry`
+  wraps fetch/scheduled/queue in `src/index.ts` (explicit `<Env, QueueJob>`
+  generics — inference can't back-infer Env). Captures: Hono `onError` (the one
+  choke point), queue-consumer failures (tailor + match jobs, with ids),
+  enrich/tailor background catches. **Cron monitor "hourly-matcher"** check-ins
+  (in_progress→ok/error, upserted crontab `17 * * * *`) — a dead matcher now
+  alerts; the NULL-embedding regression ran dark for days without this. Web:
+  `instrumentation-client.ts` + `instrumentation.ts` (+`global-error.tsx`),
+  errors-only (no replay — PostHog owns that), no `withSentryConfig` yet (source
+  maps need SENTRY_AUTH_TOKEN; add later).
+- **PostHog (product + business funnel)** — server-side `capture()` in
+  `src/observability.ts` (bare fetch, repo no-SDK style; waitUntil on request
+  path, awaited in queue). Events: `resume_uploaded`, `match_run`
+  {mode:manual|cron, surfaced} (cron emits per campaign — alert on sustained
+  surfaced=0), `match_approved`, `tailor_completed/failed` {durationMs,
+  iterations}. All org-grouped, operator-identified; **no résumé text/PII in
+  props**. Web: `app/observability.tsx` — posthog-js autocapture + session
+  replay with `maskAllInputs`, `identify(userId)` + `group("org", orgId)`.
+- **LangSmith (LLM traces)** — `langsmithTracing()` builds Client+LangChainTracer
+  (explicit key — Workers have no process.env); passed into `runIntake`/
+  `tailorResume` invoke (new optional `tracing` param), flushed via
+  `awaitPendingTraceBatches` (waitUntil on request path, awaited in queue).
+  NOTE: traces contain résumé text — set LangSmith retention/PII policy.
+- **CF AI Gateway (LLM transport)** — `openaiChatUrl/openaiEmbeddingsUrl/
+  anthropicMessagesUrl` base-URL swaps in `graph/llm.ts`, `embeddings.ts`,
+  `summarize.ts` (+ optional `cf-aig-authorization`). Covers cost/tokens/caching
+  for ALL LLM calls incl. enrichment that LangSmith doesn't see.
+- **Env**: 8 new optional keys documented in `.dev.vars.example` +
+  `worker-configuration.d.ts` + wrangler.jsonc secrets comment (SENTRY_DSN,
+  POSTHOG_API_KEY, LANGSMITH_API_KEY, AI_GATEWAY_URL + variants).
+- **Gates green**: `./init.sh` (Worker tsc, db:generate no-change, web tsc),
+  `wrangler deploy --dry-run` (bundle 1.48 MB gzip), web `next build` (shared JS
+  102→183 kB from client SDKs). NOT verified live: needs the four accounts/keys
+  (then `wrangler secret put` + Vercel env + deploy).
+- **ACTIVATION (2026-07-01→02) — DONE & DEPLOYED**: All 4 Worker secrets set
+  (SENTRY_DSN, POSTHOG_API_KEY, LANGSMITH_API_KEY, AI_GATEWAY_URL) and verified
+  live by direct API (PostHog 200 Ok, LangSmith trace visible, Sentry envelope
+  200). **AI Gateway `fyj` created** via CF API (acct 489409dba…/fyj, collect_logs
+  on) → AI_GATEWAY_URL points all Worker+scanner LLM calls through it. **Worker
+  DEPLOYED** — version 410e3ea9, `/health` 200, cron `17 * * * *` + fyj-match
+  queue armed, secret list confirms all 7 keys. Web: user set NEXT_PUBLIC_SENTRY_DSN
+  + NEXT_PUBLIC_POSTHOG_KEY on the Vercel project (redeploy to pick up). Scanner
+  (sibling repo): SENTRY_DSN + LANGSMITH_API_KEY + AI_GATEWAY_URL in .env + GH
+  Actions secret; verified. Gateway/PostHog won't show LLM traffic until a real
+  upload/tailor runs (cron currently surfaces 0 — the null-embedding regression,
+  which is now VISIBLE as match_run{surfaced:0} in PostHog = the intended alert).
+- **Semantics preserved**: tailor failures still swallowed (no queue retry);
+  match-queue retry unchanged; all telemetry failures warn-and-continue.
+
+---
+
+## 2026-07-01 — Résumé tailor: port fyj_scanner prompt/template + rendered preview UI
+
+Adopted the stronger tailoring pieces from the sibling **fyj_scanner** repo (its
+f-402 generator + f-406 renderer) and replaced the raw-markdown tailor drawer
+with a rendered final-résumé preview.
+
+- **`src/graph/tailor.ts` — WRITER_SYSTEM upgraded** from the 7-line prompt to the
+  scanner's recruiter/ATS ruleset: preserve factual scaffold; surface JD skills
+  *inside experience bullets* (not just the Skills list); prune off-target
+  content; stay plausible; **exhaustive bolding** of JD terms; and — critically —
+  the **markdown/template conventions the renderer depends on** (`# Name`, contact
+  line with ` | ` + links, ALL-CAPS `##` sections, `### Title | Company<TAB>Date`
+  role headings). **CRITIQUE_SYSTEM** now also fails on fabrication, weak ATS
+  coverage, missing bolding, broken template conventions, and length drift.
+- **Length budget (±10%)** ported: `lengthBand()`/`lengthBudgetBlock()` inject the
+  master's word/bullet/skill-category targets into the writer task (after the
+  cache breakpoint, so caching is preserved), and the review node has a **local
+  length gate** (no LLM cost) that forces a revise when out of range — mirrors the
+  scanner evaluator's score cap.
+- **`web/lib/resume-render.ts` (new)** — dependency-free TS port of the scanner's
+  `mdToHtml` + print-tuned **Word/Cambria** CSS as `resumeHtmlDocument()`. One
+  renderer feeds both the preview and the PDF, so what's reviewed == what prints.
+- **`TailoredResumeDrawer` (clients/[id])** — defaults to a **rendered preview**
+  (isolated `<iframe srcDoc>` so the résumé CSS can't collide with Tailwind) with
+  a **Preview / Edit** toggle; "Download PDF" now uses the same renderer. The old
+  inline `mdToHtml` (bare styling) is gone.
+- **Gates green:** Worker `tsc`, `db:generate` (no schema change), web `tsc`, and
+  `next build` (all 14 routes) — via `./init.sh` + `cd web && npm run build`.
+  Not runtime-verified (no Neon/CF creds; needs `ANTHROPIC_API_KEY` on the Worker
+  to actually generate). Existing saved résumés render safely — the renderer
+  degrades gracefully on markdown that predates the new conventions.
+
+---
+
 ## 2026-06-29 — f-151: Explore browse-by-default + reranked search; match dedup; delete track
 
 - **Explore browses newest jobs by default** (no query): new index RPC `recent_jobs(filters)` (newest active, applied to Supabase as `f151_recent_jobs`) → `/api/jobs/recent` → `index-client.recentJobs` → Explore default view. A query runs hybrid+rerank search. **Dropped all candidate-fit framing** from Explore (no "% match" chip / rationale) — it's job discovery.
