@@ -13,6 +13,7 @@ import {
   feedbackSignal,
   memberRole,
 } from "./db/schema";
+import * as Sentry from "@sentry/cloudflare";
 import { parseResume } from "./resume";
 import { embedText } from "./embeddings";
 import { getJob, recentJobs, type JobFilters } from "./index-client";
@@ -21,6 +22,7 @@ import { runIntake } from "./graph/intake";
 import { enrichOne } from "./graph/enrich";
 import { tailorResume } from "./graph/tailor";
 import { hasAnthropic } from "./graph/llm";
+import { capture, langsmithTracing } from "./observability";
 
 type Vars = { db: DB; principal: Principal };
 
@@ -114,12 +116,14 @@ async function enrichCampaignBackground(env: Env, who: Principal, campaignId: st
           await repo.enrichMatch(db, who, m.id, e);
         } catch (err) {
           console.error(JSON.stringify({ at: "enrich", matchId: m.id, err: String(err) }));
+          Sentry.captureException(err, { data: { at: "enrich", matchId: m.id } });
         }
       }
     };
     await Promise.all(Array.from({ length: 5 }, worker));
   } catch (err) {
     console.error(JSON.stringify({ at: "enrichCampaign", campaignId, err: String(err) }));
+    Sentry.captureException(err, { data: { at: "enrichCampaign", campaignId } });
   } finally {
     await close();
   }
@@ -136,12 +140,16 @@ async function enrichCampaignBackground(env: Env, who: Principal, campaignId: st
 export async function tailorMatchBackground(env: Env, who: Principal, matchId: string): Promise<void> {
   if (!hasAnthropic(env)) return;
   const { db, close } = createDb(env.HYPERDRIVE.connectionString);
+  const startedAt = Date.now();
+  // LangSmith trace of the write→review→revise graph (no-op without the key).
+  // Queue consumer = full background invocation, so the flush is awaited inline.
+  const tracing = langsmithTracing(env, { matchId, orgId: who.orgId });
   try {
     const ctx = await repo.getTailoringContext(db, who, matchId);
     if (!ctx || !ctx.resumeText) return;
     const job = await getJob(env, ctx.jobId, ctx.companyId);
     if (!job) return;
-    const result = await tailorResume(env, ctx.resumeText, job, profileSummary(ctx.parsedProfile));
+    const result = await tailorResume(env, ctx.resumeText, job, profileSummary(ctx.parsedProfile), tracing);
     const resumeName = `${(job.title ?? "role").replace(/[^a-z0-9]+/gi, "_").slice(0, 48)}.md`;
     await repo.saveTailoredResume(db, who, {
       matchId,
@@ -150,9 +158,23 @@ export async function tailorMatchBackground(env: Env, who: Principal, matchId: s
       model: result.model,
       resumeName,
     });
+    await capture(env, "tailor_completed", {
+      distinctId: who.userId,
+      orgId: who.orgId,
+      props: { matchId, durationMs: Date.now() - startedAt, iterations: result.iterations, model: result.model },
+    });
   } catch (err) {
     console.error(JSON.stringify({ at: "tailorMatch", matchId, err: String(err) }));
+    Sentry.captureException(err, { data: { at: "tailorMatch", matchId } });
+    await capture(env, "tailor_failed", {
+      distinctId: who.userId,
+      orgId: who.orgId,
+      props: { matchId, durationMs: Date.now() - startedAt },
+    });
+    // Swallowed (no rethrow), as before: a failed tailor stays "pending" and the
+    // drawer's "Regenerate" re-kicks it — the queue does not retry tailor jobs.
   } finally {
+    await tracing?.flush();
     await close();
   }
 }
@@ -181,6 +203,9 @@ export function createApi() {
         code: (cause as { code?: string } | undefined)?.code ?? null,
       }),
     );
+    // Hono catches route errors, so withSentry never sees them as unhandled —
+    // this single hook is where every API error becomes a Sentry issue.
+    Sentry.captureException(err, { data: { path: c.req.path, method: c.req.method } });
     return c.json({ error: "internal_error" }, 500);
   });
 
@@ -520,8 +545,11 @@ export function createApi() {
 
     // Intake graph (LangGraph): extract structured candidate fields (gpt-4o-mini),
     // summarize + embed into the index's vector space (reuses f-134), and search
-    // the index for the top matches — all in one graph run.
-    const intake = await runIntake(c.env, parsed.text);
+    // the index for the top matches — all in one graph run. LangSmith-traced when
+    // configured; the flush rides waitUntil so it never blocks the response.
+    const tracing = langsmithTracing(c.env, { orgId: p.orgId, clientId, profileId });
+    const intake = await runIntake(c.env, parsed.text, tracing);
+    if (tracing) c.executionCtx.waitUntil(tracing.flush());
     if (!intake.embedding) return c.json({ error: "could not embed resume" }, 422);
 
     const row = await repo.attachResume(c.get("db"), p, profileId, {
@@ -548,6 +576,13 @@ export function createApi() {
     if (campaignId)
       c.executionCtx.waitUntil(enrichCampaignBackground(c.env, p, campaignId));
 
+    c.executionCtx.waitUntil(
+      capture(c.env, "resume_uploaded", {
+        distinctId: p.userId,
+        orgId: p.orgId,
+        props: { clientId, profileId, surfaced: intake.matches.length, kind: parsed.kind },
+      }),
+    );
     return c.json({ profile: row, surfaced: intake.matches.length });
   });
 
@@ -579,6 +614,13 @@ export function createApi() {
     });
     if (matches.length) await repo.recordRun(c.get("db"), p, campaignId, matches);
     c.executionCtx.waitUntil(enrichCampaignBackground(c.env, p, campaignId));
+    c.executionCtx.waitUntil(
+      capture(c.env, "match_run", {
+        distinctId: p.userId,
+        orgId: p.orgId,
+        props: { mode: "manual", campaignId, surfaced: matches.length },
+      }),
+    );
 
     const surfaced = await repo.listMatches(c.get("db"), p, { candidateId: profile.clientId });
     return c.json({ surfaced: matches.length, matches: surfaced });
@@ -745,6 +787,13 @@ export function createApi() {
         tailoring = true;
       }
     }
+    c.executionCtx.waitUntil(
+      capture(c.env, "match_approved", {
+        distinctId: p.userId,
+        orgId: p.orgId,
+        props: { matchId, tailoring },
+      }),
+    );
     return c.json({ ...result, tailoring });
   });
 

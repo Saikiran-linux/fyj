@@ -16,6 +16,8 @@
  * region of the space and rank worse.
  */
 
+import { openaiChatUrl, aiGatewayHeaders } from "./observability";
+
 export const SUMMARY_MODEL = "gpt-4o-mini";
 
 // gpt-4o-mini context is huge; cap input for predictable cost/latency. Resumes
@@ -73,11 +75,13 @@ export async function summarizeResume(env: Env, resumeText: string): Promise<Res
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let res: Response;
     try {
-      res = await fetch("https://api.openai.com/v1/chat/completions", {
+      // Routes via Cloudflare AI Gateway when AI_GATEWAY_URL is set (logs/cost/cache).
+      res = await fetch(openaiChatUrl(env), {
         method: "POST",
         headers: {
           "content-type": "application/json",
           authorization: `Bearer ${env.OPENAI_API_KEY}`,
+          ...aiGatewayHeaders(env),
         },
         body: JSON.stringify({
           model: SUMMARY_MODEL,

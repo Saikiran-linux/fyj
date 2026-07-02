@@ -16,6 +16,7 @@ import { summarizeResume } from "../summarize";
 import { embedRaw } from "../embeddings";
 import { type JobFilters } from "../index-client";
 import { matchProfile, type SurfacedMatch } from "../match";
+import type { LangsmithTracing } from "../observability";
 import { openaiJson } from "./llm";
 
 /** One role from the candidate's work history (for the editable Experience section). */
@@ -170,18 +171,29 @@ export function buildIntakeGraph(env: Env, hydrate = 25) {
   return graph.compile();
 }
 
-export async function runIntake(env: Env, resumeText: string): Promise<IntakeResult> {
+export async function runIntake(
+  env: Env,
+  resumeText: string,
+  // Optional LangSmith handle (src/observability.ts) — traces extract/summarize/
+  // embed/search. Null (no key configured) = untraced, as before.
+  tracing?: LangsmithTracing | null,
+): Promise<IntakeResult> {
   const app = buildIntakeGraph(env);
-  const out = await app.invoke({
-    resumeText,
-    candidate: null,
-    attempts: 0,
-    embedInput: null,
-    embedding: null,
-    embeddingModel: null,
-    filters: { targetOnly: true },
-    matches: [],
-  });
+  const out = await app.invoke(
+    {
+      resumeText,
+      candidate: null,
+      attempts: 0,
+      embedInput: null,
+      embedding: null,
+      embeddingModel: null,
+      filters: { targetOnly: true },
+      matches: [],
+    },
+    tracing
+      ? { callbacks: tracing.callbacks, metadata: tracing.metadata, runName: "resume-intake" }
+      : undefined,
+  );
   return {
     candidate: out.candidate,
     embedInput: out.embedInput,

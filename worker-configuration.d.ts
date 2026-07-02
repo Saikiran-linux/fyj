@@ -25,6 +25,20 @@ interface Env {
   VOYAGE_RERANK_ENABLED?: string;
   FYJ_INDEX_URL: string;
   FYJ_INDEX_KEY: string;
+  // ── Observability (ALL optional — each no-ops when unset; src/observability.ts) ──
+  // Sentry: errors + cron/queue monitors. `wrangler secret put SENTRY_DSN`.
+  SENTRY_DSN?: string;
+  SENTRY_ENVIRONMENT?: string; // defaults to "production" in src/index.ts
+  // PostHog: business/product events (server-side capture via fetch).
+  POSTHOG_API_KEY?: string;
+  POSTHOG_HOST?: string; // defaults to https://us.i.posthog.com
+  // LangSmith: LangGraph traces for intake/tailor.
+  LANGSMITH_API_KEY?: string;
+  LANGSMITH_PROJECT?: string; // defaults to "fyj-ops-console"
+  // Cloudflare AI Gateway: base https://gateway.ai.cloudflare.com/v1/<acct>/<gw>.
+  // When set, OpenAI/Anthropic calls route through it (logs/cost/cache/budgets).
+  AI_GATEWAY_URL?: string;
+  AI_GATEWAY_TOKEN?: string; // only for authenticated gateways
 }
 
 // Queue message: one continuous-match run for a campaign.

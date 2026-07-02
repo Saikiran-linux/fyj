@@ -48,4 +48,8 @@
   // Secrets (set via `wrangler secret put`, never here):
   //   BETTER_AUTH_SECRET, ADMIN_BOOTSTRAP_SECRET, OPENAI_API_KEY, ANTHROPIC_API_KEY,
   //   FYJ_INDEX_URL, FYJ_INDEX_KEY
+  // Observability secrets (ALL optional — each no-ops when unset; see
+  // src/observability.ts + .dev.vars.example):
+  //   SENTRY_DSN, POSTHOG_API_KEY, LANGSMITH_API_KEY, AI_GATEWAY_URL
+  //   (+ SENTRY_ENVIRONMENT, POSTHOG_HOST, LANGSMITH_PROJECT, AI_GATEWAY_TOKEN)
 }
