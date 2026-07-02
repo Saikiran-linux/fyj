@@ -33,3 +33,21 @@ VOYAGE_API_KEY=""
 # Read-only access to the fyj job index (search_jobs / get_job)
 FYJ_INDEX_URL="https://mwcpoaefmggapztkxakp.supabase.co"
 FYJ_INDEX_KEY=""
+
+# ── Observability (ALL optional — every one no-ops when blank; src/observability.ts) ──
+# Sentry: Worker errors + cron/queue monitors ("hourly-matcher").
+SENTRY_DSN=""
+# SENTRY_ENVIRONMENT="production"
+# PostHog: business events (resume_uploaded, match_run, match_approved,
+# tailor_completed/failed) with org group analytics. Project API key (phc_…).
+POSTHOG_API_KEY=""
+# POSTHOG_HOST="https://us.i.posthog.com"
+# LangSmith: traces of the intake + tailor LangGraph runs. NOTE: traces contain
+# résumé text — set workspace data retention accordingly.
+LANGSMITH_API_KEY=""
+# LANGSMITH_PROJECT="fyj-ops-console"
+# Cloudflare AI Gateway: transport-level logging/cost/caching for ALL
+# OpenAI/Anthropic calls via base-URL swap. Create a gateway, then:
+# AI_GATEWAY_URL="https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway>"
+AI_GATEWAY_URL=""
+# AI_GATEWAY_TOKEN=""  # only if the gateway has authentication enabled

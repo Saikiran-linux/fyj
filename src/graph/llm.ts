@@ -7,6 +7,8 @@
  * tailoring (Sonnet).
  */
 
+import { openaiChatUrl, anthropicMessagesUrl, aiGatewayHeaders } from "../observability";
+
 export const HAIKU = "claude-haiku-4-5-20251001";
 export const SONNET = "claude-sonnet-4-6";
 
@@ -45,11 +47,13 @@ export async function openaiJson<T>(
   let lastErr = "";
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      // Routes via Cloudflare AI Gateway when AI_GATEWAY_URL is set (logs/cost/cache).
+      const res = await fetch(openaiChatUrl(env), {
         method: "POST",
         headers: {
           authorization: `Bearer ${env.OPENAI_API_KEY}`,
           "content-type": "application/json",
+          ...aiGatewayHeaders(env),
         },
         body: JSON.stringify({
           model: opts.model ?? "gpt-4o-mini",
@@ -117,12 +121,14 @@ export async function anthropicText(
   let lastErr = "";
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      // Routes via Cloudflare AI Gateway when AI_GATEWAY_URL is set (logs/cost/cache).
+      const res = await fetch(anthropicMessagesUrl(env), {
         method: "POST",
         headers: {
           "x-api-key": env.ANTHROPIC_API_KEY,
           "anthropic-version": "2023-06-01",
           "content-type": "application/json",
+          ...aiGatewayHeaders(env),
         },
         body: JSON.stringify({
           model: opts.model,
