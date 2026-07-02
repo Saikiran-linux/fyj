@@ -17,10 +17,12 @@
   "dependencies": {
     "@langchain/core": "^1.2.1",
     "@langchain/langgraph": "^1.4.6",
+    "@sentry/cloudflare": "^10.63.0",
     "better-auth": "^1.2.0",
     "drizzle-orm": "^0.45.2",
     "fflate": "^0.8.3",
     "hono": "^4.6.0",
+    "langsmith": "^0.7.14",
     "postgres": "^3.4.5",
     "unpdf": "^1.6.2",
     "zod": "^3.25.76"

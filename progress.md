@@ -4,6 +4,63 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-07-02 — Résumé tailor template + observability rollout; embedding fix reconciliation
+
+Three things landed this session, plus a genuine conflict with the f-152 work
+below that's worth understanding if you hit something similar.
+
+**1. Résumé tailor upgrade** — ported the stronger generator prompt + strict
+markdown/template conventions from the sibling `fyj_scanner` repo (its f-402
+generator + f-406 renderer): `src/graph/tailor.ts`'s `WRITER_SYSTEM` now carries
+scaffold preservation, JD-skills-in-bullets, exhaustive bolding, and the
+`# Name` / `## SECTION` / `### Title | Company<TAB>Date` conventions the
+renderer depends on, plus a ±10% length budget with a local length gate in the
+critique node. New `web/lib/resume-render.ts` — dependency-free TS port of the
+scanner's markdown→HTML renderer + print-tuned Word/Cambria CSS. The tailor
+drawer now defaults to a rendered preview (isolated iframe) with a Preview/Edit
+toggle; PDF export uses the same renderer.
+
+**2. Observability** — Sentry (errors + `hourly-matcher` cron monitor), PostHog
+(`resume_uploaded`/`match_run`/`match_approved`/`tailor_completed`/`_failed`
+events, org-grouped), LangSmith (traces on `runIntake`/`tailorResume`),
+Cloudflare AI Gateway (LLM transport logging/cost). New `src/observability.ts` —
+all four seams optional/env-gated, no-ops until their secret is set. Live-
+verified: Sentry envelope 200, PostHog capture `Ok`, LangSmith trace visible,
+AI Gateway `fyj` created (acct `489409dba6e11499199acff6ffb8eddf`) and routing.
+Worker secrets set (`SENTRY_DSN`, `POSTHOG_API_KEY`, `LANGSMITH_API_KEY`,
+`AI_GATEWAY_URL`); Vercel env set for the web side.
+
+**3. Embedding fix — discovered a duplicate, reconciled with real data.** While
+independently root-causing why matching was dark (NULL `client_profiles.
+embedding`), this session re-derived and shipped almost the same fix the
+**f-152 entry below already did** (a local `main` that was 4 commits stale
+meant the collision wasn't visible until PR time). The only real difference:
+this session's `embedRaw`/`embedText` both used Voyage `input_type='query'`;
+f-152 below uses `document`/`query`. **Ran a live A/B against the real index
+using the actual 3 profiles' stored summaries** (not synthetic text) before
+deciding: `document` beat `query` by **+0.10 to +0.16 absolute cosine on every
+single profile** (e.g. Backend Engineer: 0.89 vs 0.73 top-1). Reason: the
+résumé precis (`src/summarize.ts`) is deliberately built in the SAME
+`Key: value` JD-shaped structure as a job's `buildJobText` — it's document-
+shaped text, not a short natural-language search string, so Voyage's `query`
+role (tuned for short NL queries — which is exactly what `embedText`'s
+command-bar searches are) fits it poorly. **f-152's choice was correct; this
+session's independent one was a regression** and has been discarded — the
+duplicate commit was dropped rather than merged. **Live state was briefly
+wrong**: this session deployed its `query`/`query` version to production
+*after* f-152 was already merged (never pulled first), so prod ran the worse
+code for a short window with the 3 live profiles backfilled under it. Both
+are now fixed: production redeployed from the real `origin/main`, all 3
+profiles re-embedded with `document` (verified: cosine now 0.83–0.89, matching
+the A/B numbers exactly).
+
+**Lesson for future sessions:** `git fetch && git log main..origin/main`
+before opening a PR, always — this collision was only caught because GitHub
+refused the merge (`mergeStateStatus: DIRTY`), not because anything local
+flagged the drift.
+
+---
+
 ## 2026-06-30 — f-152: embeddings OpenAI -> Voyage voyage-4-large (1024d), both repos
 
 - **Why both repos:** `src/embeddings.ts`'s own doc comment says the query-side embedding model MUST stay in lockstep with whatever fyj_scanner embeds jobs with, or cosine scores are meaningless. Confirmed fyj_scanner (`~/Desktop/fyj_scanner`) was still on OpenAI `text-embedding-3-small` (1536d) — yesterday's Voyage change was rerank-only (f-149), not an embed swap. So this migration touches BOTH repos in lockstep, not just this one.
