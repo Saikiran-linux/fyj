@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/table";
 import { Pencil, Plus, Trash2, X, Upload } from "lucide-react";
 import { api } from "@/lib/api";
+import { resumeHtmlDocument } from "@/lib/resume-render";
 import { CandidateHeatmap } from "@/components/candidate-heatmap";
 import { CandidateAgenda, type AgendaItem } from "@/components/candidate-agenda";
 import { EditCandidateDialog } from "@/components/edit-candidate-dialog";
@@ -574,42 +575,17 @@ function MatchRow({
 
 /**
  * Tailored-résumé drawer (f-141). After Approve, the tailoring graph runs in the
- * background; this polls until the Markdown is ready, lets the operator edit +
- * Save, and exports a PDF via the browser's print-to-PDF (no extra deps).
+ * background; this polls until the Markdown is ready, then defaults to a RENDERED
+ * preview of the final résumé (classic Word/Cambria template via
+ * lib/resume-render) so the operator reviews what actually prints — not raw
+ * markdown. A Preview/Edit toggle keeps inline editing, and "Download PDF" uses
+ * the same renderer so the export matches the preview exactly.
  */
-function mdToHtml(md: string): string {
-  const esc = (s: string) =>
-    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const lines = md.split(/\r?\n/);
-  const out: string[] = [];
-  let inList = false;
-  const inline = (s: string) =>
-    esc(s)
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  for (const ln of lines) {
-    const h = /^(#{1,4})\s+(.*)$/.exec(ln);
-    const li = /^[-*]\s+(.*)$/.exec(ln);
-    if (li) {
-      if (!inList) { out.push("<ul>"); inList = true; }
-      out.push(`<li>${inline(li[1] ?? "")}</li>`);
-      continue;
-    }
-    if (inList) { out.push("</ul>"); inList = false; }
-    if (h) {
-      const level = (h[1] ?? "#").length;
-      out.push(`<h${level}>${inline(h[2] ?? "")}</h${level}>`);
-    } else if (ln.trim() === "") out.push("");
-    else out.push(`<p>${inline(ln)}</p>`);
-  }
-  if (inList) out.push("</ul>");
-  return out.join("\n");
-}
-
 function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: () => void }) {
   const [markdown, setMarkdown] = useState<string | null>(null);
   const [status, setStatus] = useState<"pending" | "ready" | "timeout" | "blocked">("pending");
   const [reason, setReason] = useState<"no_resume" | "no_ai" | null>(null);
+  const [view, setView] = useState<"preview" | "edit">("preview");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [retry, setRetry] = useState(0);
@@ -697,11 +673,8 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
     if (markdown == null) return;
     const w = window.open("", "_blank");
     if (!w) return;
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Tailored résumé</title>
-      <style>body{font-family:Georgia,serif;max-width:720px;margin:40px auto;padding:0 24px;line-height:1.5;color:#111}
-      h1{font-size:24px;margin:0 0 4px} h2{font-size:16px;border-bottom:1px solid #ccc;padding-bottom:2px;margin:18px 0 8px}
-      h3{font-size:14px;margin:12px 0 4px} ul{margin:4px 0 8px 18px} p{margin:4px 0}</style></head>
-      <body>${mdToHtml(markdown)}<script>window.onload=function(){window.print()}</script></body></html>`);
+    // Same renderer as the preview iframe → the PDF matches what's on screen.
+    w.document.write(resumeHtmlDocument(markdown, { title: "Tailored résumé", autoPrint: true }));
     w.document.close();
   }
 
@@ -719,12 +692,33 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
                   ? "Still working — check again in a moment."
                   : status === "blocked"
                     ? "Can’t tailor yet."
-                    : "Editable — Save changes, then export PDF."}
+                    : view === "preview"
+                      ? "Final résumé preview — export PDF or switch to Edit."
+                      : "Editable Markdown — Save changes, then Preview."}
             </div>
           </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-            ✕
-          </button>
+          <div className="flex items-center gap-2">
+            {status === "ready" && (
+              <div className="flex rounded-md border border-border p-0.5">
+                {(["preview", "edit"] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    className={`rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
+                      view === v
+                        ? "bg-foreground text-background"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+              ✕
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-auto p-4">
           {status === "pending" ? (
@@ -770,6 +764,15 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
                 Regenerate &amp; check again
               </Button>
             </div>
+          ) : view === "preview" ? (
+            // Rendered final résumé — isolated in an iframe so the Word/Cambria
+            // template CSS can't collide with the app's Tailwind styles, and so
+            // the preview is byte-identical to the print-to-PDF output.
+            <iframe
+              title="Résumé preview"
+              srcDoc={resumeHtmlDocument(markdown ?? "", { title: "Tailored résumé" })}
+              className="h-full min-h-[520px] w-full border border-border bg-white"
+            />
           ) : (
             <textarea
               value={markdown ?? ""}
@@ -788,7 +791,9 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
           <Button size="sm" variant="outline" disabled={status !== "ready"} onClick={downloadPdf}>
             Download PDF
           </Button>
-          <span className="ml-auto text-xs text-muted-foreground">Markdown</span>
+          <span className="ml-auto text-xs text-muted-foreground">
+            {view === "preview" ? "Print-ready preview" : "Markdown"}
+          </span>
         </div>
       </aside>
     </>
