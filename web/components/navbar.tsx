@@ -12,6 +12,7 @@ import {
   ChevronDown,
   Settings,
   LogOut,
+  FlaskConical,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { signOut, useSession } from "@/lib/auth-client";
@@ -80,6 +81,14 @@ function ProfileMenu() {
           >
             <Users className="size-4 text-muted-foreground" />
             Members
+          </Link>
+          <Link
+            href="/tools/tailor-lab"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2.5 px-2 py-1.5 text-sm transition-colors hover:bg-muted"
+          >
+            <FlaskConical className="size-4 text-muted-foreground" />
+            Tailor Lab
           </Link>
           <Link
             href="/settings"

@@ -32,7 +32,7 @@
     "@types/node": "^22.10.0",
     "drizzle-kit": "^0.31.4",
     "typescript": "^5.7.0",
-    "wrangler": "^4.104.0"
+    "wrangler": "^4.107.0"
   },
   "engines": {
     "node": ">=20"

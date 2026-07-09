@@ -14,6 +14,10 @@ import type { LangsmithTracing } from "../observability";
 import { anthropicText, anthropicJson, HAIKU, SONNET, type Seg } from "./llm";
 
 const MAX_ITERATIONS = 2;
+// Output cap for the writer (draft + revise). Was 4096, which clipped long
+// résumés mid-document — the truncated draft then read as "too short" to the
+// length gate and burned a revise. 8000 covers a full multi-page résumé.
+const WRITER_MAX_TOKENS = 8000;
 
 interface Critique {
   pass: boolean;
@@ -31,7 +35,7 @@ interface Critique {
 // Word/Cambria résumé (centered name + contact rule, ruled section headers,
 // right-aligned dates). The renderer is dumb by design, so the CONVENTIONS in
 // rule 6 are load-bearing — break them and the preview/PDF falls back to plain.
-const WRITER_SYSTEM = `You tailor a candidate's master résumé to ONE specific job description.
+export const WRITER_SYSTEM = `You tailor a candidate's master résumé to ONE specific job description.
 
 RULES (in order of importance):
 1. Preserve the factual SCAFFOLD of the master résumé exactly: company names,
@@ -92,7 +96,7 @@ RULES (in order of importance):
 
 Follow the TASK at the end of the message.`;
 
-const CRITIQUE_SYSTEM = `You are a strict résumé reviewer. Compare a TAILORED résumé against the target JOB and the candidate's MASTER résumé. Reply with ONLY JSON:
+export const CRITIQUE_SYSTEM = `You are a strict résumé reviewer. Compare a TAILORED résumé against the target JOB and the candidate's MASTER résumé. Reply with ONLY JSON:
 { "pass": boolean, "issues": string[] }
 Fail (pass=false) if ANY of these hold:
 - Fabrication: it invents an employer, title, date, degree, certification, or metric the master doesn't support.
@@ -112,7 +116,7 @@ const TailorState = Annotation.Root({
   iterations: Annotation<number>(),
 });
 
-const countWords = (text: string) => (text.match(/\S+/g) || []).length;
+export const countWords = (text: string) => (text.match(/\S+/g) || []).length;
 
 /**
  * Length budget derived from the master résumé (ported from the scanner's
@@ -120,7 +124,7 @@ const countWords = (text: string) => (text.match(/\S+/g) || []).length;
  * bullet + skill-category counts so the writer can preserve the master's shape
  * rather than silently collapsing it to a one-pager (the most common failure).
  */
-function lengthBand(master: string) {
+export function lengthBand(master: string) {
   const sourceWords = countWords(master);
   const lo = Math.max(50, Math.round((sourceWords * 0.9) / 10) * 10);
   const hi = Math.round((sourceWords * 1.1) / 10) * 10;
@@ -129,7 +133,7 @@ function lengthBand(master: string) {
   return { sourceWords, lo, hi, bulletCount, skillCategoryCount };
 }
 
-function lengthBudgetBlock(master: string): string {
+export function lengthBudgetBlock(master: string): string {
   const { sourceWords, lo, hi, bulletCount, skillCategoryCount } = lengthBand(master);
   return [
     `LENGTH BUDGET — master is ${sourceWords} words, ${bulletCount} bullets, ${skillCategoryCount} skill categories.`,
@@ -160,7 +164,7 @@ export function buildTailorGraph(env: Env) {
         system: WRITER_SYSTEM,
         user: writerUser(s, "Write the initial tailored résumé now."),
         model: SONNET,
-        maxTokens: 4096,
+        maxTokens: WRITER_MAX_TOKENS,
         temperature: 0.2,
       });
       return { draft };
@@ -205,7 +209,7 @@ export function buildTailorGraph(env: Env) {
           `Revise the current draft to fix these reviewer issues, then output the full improved résumé:\n- ${(s.critique?.issues ?? []).join("\n- ")}\n\nCURRENT DRAFT:\n${s.draft}`,
         ),
         model: SONNET,
-        maxTokens: 4096,
+        maxTokens: WRITER_MAX_TOKENS,
         temperature: 0.2,
       });
       return { draft, iterations: (s.iterations ?? 0) + 1 };
@@ -228,7 +232,7 @@ function jobText(job: JobDetail): string {
   ]
     .filter(Boolean)
     .join("\n")
-    .slice(0, 8_000);
+    .slice(0, 12_000);
 }
 
 export interface TailorResult {
@@ -249,7 +253,7 @@ export async function tailorResume(
   const app = buildTailorGraph(env);
   const out = await app.invoke(
     {
-      master: master.slice(0, 16_000),
+      master: master.slice(0, 32_000),
       jobText: jobText(job),
       candidateSummary,
       draft: "",

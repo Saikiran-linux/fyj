@@ -22,6 +22,14 @@ import { runIntake } from "./graph/intake";
 import { enrichOne } from "./graph/enrich";
 import { tailorResume } from "./graph/tailor";
 import { hasAnthropic } from "./graph/llm";
+import {
+  runTailorLab,
+  labDefaults,
+  LAB_MODELS,
+  LAB_SAMPLE,
+  type LabRequest,
+  type LabStageConfig,
+} from "./graph/tailor-lab";
 import { capture, langsmithTracing } from "./observability";
 
 type Vars = { db: DB; principal: Principal };
@@ -830,6 +838,84 @@ export function createApi() {
     if (typeof body.markdown !== "string") return c.json({ error: "markdown required" }, 400);
     const row = await repo.updateTailoredResume(c.get("db"), p, c.req.param("id"), body.markdown);
     return row ? c.json({ ok: true }) : c.json({ error: "not_found" }, 404);
+  });
+
+  // ── résumé prompt lab (dev tool) ─────────────────────────────────────
+  // Staff-only harness to A/B tailoring prompts + model combinations across the
+  // planner/generator/verifier stages. GET returns the shipped defaults + model
+  // catalogue + a runnable sample; POST runs the pipeline synchronously and
+  // returns the full trace (see src/graph/tailor-lab.ts). No DB access — inputs
+  // are pasted, so it works without provisioned tenant data.
+  app.get("/api/tools/tailor-lab", (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    return c.json({
+      models: LAB_MODELS,
+      defaults: labDefaults(),
+      sample: LAB_SAMPLE,
+      hasAnthropic: hasAnthropic(c.env),
+      hasOpenai: Boolean(c.env.OPENAI_API_KEY),
+    });
+  });
+
+  app.post("/api/tools/tailor-lab", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as Partial<{
+      master: string;
+      jobText: string;
+      candidateSummary: string;
+      maxIterations: number;
+      maxOutputTokens: number;
+      planner: LabStageConfig | null;
+      generator: LabStageConfig;
+      verifier: LabStageConfig;
+    }>;
+
+    const master = (body.master ?? "").trim();
+    const jobText = (body.jobText ?? "").trim();
+    if (!master) return c.json({ error: "master résumé is required" }, 400);
+    if (!jobText) return c.json({ error: "job description is required" }, 400);
+
+    const d = labDefaults();
+    const stage = (s: LabStageConfig | null | undefined, fallback: LabStageConfig): LabStageConfig => ({
+      model: (s?.model ?? fallback.model).trim() || fallback.model,
+      system: (s?.system ?? fallback.system).trim() || fallback.system,
+    });
+
+    const req: LabRequest = {
+      master,
+      jobText,
+      candidateSummary: (body.candidateSummary ?? "").trim(),
+      maxIterations: typeof body.maxIterations === "number" ? body.maxIterations : d.maxIterations,
+      maxOutputTokens:
+        typeof body.maxOutputTokens === "number" ? body.maxOutputTokens : d.maxOutputTokens,
+      // planner === null (explicit) disables the stage; undefined falls back to default (off).
+      planner: body.planner === null ? null : body.planner ? stage(body.planner, d.planner) : null,
+      generator: stage(body.generator, d.generator),
+      verifier: stage(body.verifier, d.verifier),
+    };
+
+    const result = await runTailorLab(c.env, req);
+    return c.json(result);
+  });
+
+  // Lab helper: parse an uploaded résumé (PDF/DOCX/text) to plain text so the
+  // operator can populate the master field by upload instead of pasting. Pure
+  // extraction — no R2, no embedding, no DB write (unlike the real intake route).
+  app.post("/api/tools/tailor-lab/parse", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const form = await c.req.formData().catch(() => null);
+    const file = form?.get("file") as UploadedFile | string | null | undefined;
+    if (!file || typeof file === "string" || typeof file.arrayBuffer !== "function") {
+      return c.json({ error: "file required" }, 400);
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (bytes.byteLength === 0) return c.json({ error: "empty file" }, 400);
+    const parsed = await parseResume(bytes, file.name, file.type || null);
+    if (!parsed.text.trim()) return c.json({ error: "no text extracted from resume" }, 422);
+    return c.json({ text: parsed.text, kind: parsed.kind, name: file.name });
   });
 
   // ── dashboard analytics (f-139) ──────────────────────────────────────
