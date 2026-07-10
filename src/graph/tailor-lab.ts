@@ -204,8 +204,9 @@ For each role in the master résumé:
 - Identify tools/frameworks/platforms that should be included
 - Identify outcomes or metrics already present that should be preserved
 - Identify metrics that must not be changed
-Every bullet recommendation should preserve actual project-task substance.
-Do not recommend vague action-verb-only bullets.
+- Capture the PROJECT CONTEXT the master provides for that role — the product or system built, the domain, and the business problem or users served — so the Generator can anchor each bullet in what was built and why, not just the tools used
+Every bullet recommendation should preserve actual project-task substance AND carry project context, not just a tool list.
+Do not recommend vague action-verb-only bullets or tool-listing bullets with no project context.
 Bad direction: Make this bullet sound more strategic.
 Good direction: Reframe this as a FastAPI model-serving bullet by centering API development, Redis caching, request validation, and downstream application integration.
 
@@ -411,7 +412,9 @@ For every key JD tool, technology, platform, methodology, or domain concept that
 
 ### 3. Preserve actual project-task substance
 
-Strong action verbs are not enough.
+Strong action verbs are not enough — and naming tools is not enough either. Every bullet must first establish the PROJECT CONTEXT: what was actually built, the product or system it was part of, the business or domain problem it solved, and who or what it served. The tools are supporting detail, not the point of the bullet. A bullet that lists technologies with no project context — e.g. "Architected backend services using Node.js and TypeScript", "Containerized services with Docker", "Implemented CI/CD pipelines with Cloud Build" — is a defect: the reader cannot tell what was accomplished or why it mattered.
+
+Ground the context in the master résumé. Use the product, domain, team, or system the master names for that role (or in the summary); never invent specific product names, clients, users, or business metrics the master does not support.
 
 Every experience bullet must describe a concrete:
 
@@ -444,16 +447,23 @@ Good:
 
 ### 4. Use the strong bullet structure
 
-Write bullets using this structure whenever possible:
+Lead with WHAT and WHY, not the tech. Write bullets using this structure whenever possible:
 
-Action verb + actual project task + tool/framework/platform/method + system context + outcome/purpose
+Action verb + what was built and the project/product it was part of + the business or domain problem it addressed + how (tool/framework/platform/method) + measurable outcome/impact
 
-Examples:
+The tools belong in the middle of the bullet as supporting detail — never as the whole bullet. Test: strip the tool names out; if the reader still cannot tell what the project was or why it mattered, the bullet is incomplete.
 
-* Built a Dockerized FastAPI microservice to serve trained churn-prediction models, using Redis caching to reduce repeated requests and improve response latency.
-* Automated batch feature-engineering pipelines using Python, Bash, and AWS S3 data feeds to transform raw customer data into model-ready datasets.
-* Implemented schema validation and exception handling in Python ingestion pipelines using Pydantic and custom data-quality checks to catch malformed records before downstream ML inference.
-* Integrated OpenAI and Claude APIs into LangChain workflows to compare response quality, latency, and token-cost trade-offs.
+Examples (note the project context carrying each bullet, with tools as support — not a stack list):
+
+* Rebuilt the clinic's patient-scheduling service — the booking flow that had to keep appointments consistent under concurrent load — migrating it from a legacy Express app to NestJS with PostgreSQL transactions and Jest integration tests.
+* Delivered the operations payments dashboard the team used to monitor real-time transfers, built in React and GraphQL so failed transactions surfaced in seconds instead of minutes.
+* Automated the nightly data-validation step in the healthcare ingestion pipeline feeding clinical reporting, using Python and Pydantic checks to catch malformed records before they reached downstream systems.
+
+Anti-pattern (tools, no project context — do NOT write bullets like these):
+
+* Architected high-scale backend services using Node.js and TypeScript.
+* Containerized Node.js services with Docker and deployed to GCP-managed environments.
+* Implemented CI/CD pipelines with GCP Cloud Build.
 
 ### 5. Include implementation tools wherever possible
 
@@ -764,12 +774,16 @@ Every experience bullet should describe a concrete:
 - Infrastructure component
 - Product contribution
 - Operational responsibility
-Flag vague bullets.
-Bad:
+Flag vague bullets AND tool-listing bullets that name technologies but never establish the project context (what was built, for what product/domain, solving what problem). Naming the stack is not context.
+Bad (vague):
 - Architected scalable systems.
 - Worked on AI solutions.
 - Used machine learning to improve outcomes.
 - Helped build backend services.
+Bad (tools, no project context):
+- Architected backend services using Node.js and TypeScript.
+- Containerized services with Docker and deployed to the cloud.
+- Implemented CI/CD pipelines with Cloud Build.
 Good:
 - Built FastAPI endpoints to serve ML prediction outputs to downstream applications, using Redis caching and request validation to reduce repeated inference calls.
 - Implemented schema validation in Python ingestion pipelines using Pydantic and custom checks to catch missing fields and type mismatches before model inference.
