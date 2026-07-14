@@ -252,3 +252,75 @@ export interface CalendarEvent {
   jobTitle: string | null;
   companyName: string | null;
 }
+
+// ── résumé prompt lab (dev tool; mirrors src/graph/tailor-lab.ts) ────────
+export interface LabModel {
+  id: string;
+  label: string;
+  provider: "anthropic" | "openai";
+  inPricePerM: number;
+  outPricePerM: number;
+}
+
+export interface LabStageConfig {
+  model: string;
+  system: string;
+}
+
+export interface LabDefaults {
+  plannerEnabled: boolean;
+  planner: LabStageConfig;
+  generator: LabStageConfig;
+  verifier: LabStageConfig;
+  maxIterations: number;
+  maxOutputTokens: number;
+}
+
+export interface LabConfig {
+  models: LabModel[];
+  defaults: LabDefaults;
+  sample: { candidateSummary: string; master: string; jobText: string };
+  hasAnthropic: boolean;
+  hasOpenai: boolean;
+}
+
+export interface LabUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+export type LabStageName = "planner" | "generator" | "verifier" | "revise";
+
+export interface LabStep {
+  stage: LabStageName;
+  iteration: number;
+  model: string;
+  ms: number;
+  output: string;
+  usage: LabUsage;
+  pass?: boolean;
+  issues?: string[];
+  error?: string;
+}
+
+export interface LabResult {
+  steps: LabStep[];
+  final: string;
+  iterations: number;
+  totalMs: number;
+  usage: LabUsage;
+  error?: string;
+}
+
+export interface LabRunInput {
+  master: string;
+  jobText: string;
+  candidateSummary: string;
+  maxIterations: number;
+  maxOutputTokens: number;
+  planner: LabStageConfig | null;
+  generator: LabStageConfig;
+  verifier: LabStageConfig;
+}

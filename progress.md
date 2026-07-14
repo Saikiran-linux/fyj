@@ -4,6 +4,101 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-07-02 — Résumé Tailoring Lab (prompt/model A/B harness, f-153)
+
+Built a staff-only experimentation page to A/B tailoring **prompts** and **model
+combinations** across a **planner → generator → verifier → (revise loop)**
+pipeline — the user wants to iterate on prompts and try model mixes without
+editing code.
+
+**Backend.** New `src/graph/tailor-lab.ts` re-runs the production tailor pipeline
+as a plain (non-LangGraph) function where every stage's system prompt AND model
+id are caller-supplied. Defaults ARE the shipped prompts — exported
+`WRITER_SYSTEM`/`CRITIQUE_SYSTEM`/`lengthBand`/`lengthBudgetBlock`/`countWords`
+from `tailor.ts` (single source of truth) + a new `DEFAULT_PLANNER_SYSTEM`
+(production has no planner; the lab adds one as an optional pre-step whose plan
+is fed to the generator). `src/graph/llm.ts` gained `callAnthropic` (text +
+usage), `openaiText` (text + usage), a normalized `LlmUsage` shape, and
+`runChat()` that dispatches by model id (`gpt-*`/`o[1-9]-*` → OpenAI, else
+Anthropic) so any stage runs on either provider. `anthropicText` now delegates to
+`callAnthropic` (no behavior change). Two staff-gated routes in `src/api.ts`:
+`GET /api/tools/tailor-lab` (model catalogue w/ approx prices, prod defaults, a
+runnable sample, provider-key presence) and `POST /api/tools/tailor-lab` (runs
+synchronously, returns the full trace: each intermediate output + latency + token
+usage + verifier pass/issues; resilient — a stage throw is recorded as a step,
+not a 500). No DB access (inputs pasted) → works without infra.
+
+**Frontend.** `web/app/(app)/tools/tailor-lab/page.tsx`: inputs (master / JD /
+summary + Load sample), three per-stage config cards (model **datalist** so you
+can pick a known model or type any id + editable system-prompt textarea; planner
+has an enable toggle), max-iterations select, a run trace of collapsible step
+cards (tokens / latency / est-cost, verifier pass·fail + issues), and a final
+résumé preview (rendered iframe via `lib/resume-render`, with Markdown/Copy).
+Nav link added to the profile menu ("Tailor Lab"). Types mirrored in
+`web/lib/types.ts`; client methods `tailorLabConfig`/`runTailorLab` in
+`web/lib/api.ts`.
+
+**Follow-up (same feature): résumé upload.** Added an "Upload résumé" button to
+the lab Inputs card so the master field can be populated from a PDF/DOCX/text
+file instead of pasting. New `POST /api/tools/tailor-lab/parse` (staff-gated)
+reuses `parseResume` (src/resume.ts, unpdf/fflate) for pure bytes→text — no R2,
+no embedding, no DB, unlike the real intake route. Client method
+`parseTailorLabResume(file)`. Gates re-run green (Worker tsc · web tsc · web
+build; lab route now 11 kB). NOTE: the parse route needs a Worker redeploy to go
+live (same as the rest of f-153).
+
+**Follow-up 2 (same feature): newer-model support + model picker + résumé
+download.** (1) Fixed a hard failure when a stage used a newer model — Sonnet 5
+/ Opus 4.8 reject `temperature` ("temperature is deprecated for this model"), and
+GPT-5 / o-series reject `temperature` AND require `max_completion_tokens` instead
+of `max_tokens`. `callAnthropic` and `openaiText` (src/graph/llm.ts) now ADAPT on
+the specific 400: drop `temperature` and/or switch the token param and retry,
+rather than hardcoding per-model behavior (self-heals for future models; older
+models unchanged). (2) Added GPT-5 / GPT-5-mini / GPT-5-nano to `LAB_MODELS`. (3)
+Model picker reworked from a flaky `<datalist>` (had a `Math.random()` id →
+hydration mismatch) to an explicit provider-grouped `<select>` PLUS an
+always-visible free-text field, so any model id can be selected or typed. (4)
+Final résumé in the lab gained **Download PDF** (print-to-PDF via
+lib/resume-render, same as the drawer) + **Download .md** buttons. Gates green
+(Worker tsc · web tsc · web build; lab route 11.3 kB). NOTE: the llm.ts fix + new
+GPT-5 catalogue entries are BACKEND — need a Worker redeploy; the picker + download
+buttons are frontend-only (hot-reload).
+
+**Follow-up 3 (same feature): output-truncation fix.** Long résumés came back cut
+off mid-document (a real data-engineer résumé stopped at "…with monito,"). Root
+cause: the generator/revise calls were hardcoded to `max_tokens: 4096`, so a long
+tailored résumé exceeded it and got clipped — then the verifier's length gate saw
+a short draft and looped a revise that also clipped. Fix: `LabRequest` now carries
+`maxOutputTokens` (default 8000, clamped 1000–32000), applied to both generator +
+revise calls (`maxOut` in runTailorLab); exposed as a "Max output tokens" number
+input in the lab run bar. NOTE for reasoning models (GPT-5/o-series) the budget
+also covers hidden reasoning tokens, so long résumés there may need a higher
+value. INPUT is NOT truncated in the lab (unlike production tailor.ts which slices
+master→16k / JD→8k chars). Gates green (Worker tsc · web tsc · web build; lab route
+11.4 kB). BACKEND change → needs a Worker redeploy to take effect; the old deploy
+ignores `maxOutputTokens` and stays at 4096.
+
+**Follow-up 4: same truncation fix in PRODUCTION tailoring.** `src/graph/tailor.ts`
+(the real approve-match → tailored-résumé path, run on the queue) had the same
+hardcoded `max_tokens: 4096` on draft+revise. Raised to a `WRITER_MAX_TOKENS = 8000`
+constant, and gave the input more headroom (master slice 16k→32k chars, JD
+8k→12k). Worker tsc clean. Needs a Worker redeploy like the rest.
+
+**Design notes / caveats.** (1) The POST runs the whole pipeline **synchronously
+in-request** (not the queue) so the trace returns at once — deliberately unlike
+production tailoring which moved to the queue for the f-147 `waitUntil` reason;
+kept safe by capping revise iterations at 3. (2) `LAB_MODELS` prices are
+approximate/display-only for the cost estimate — one obvious constant to edit.
+(3) Cross-provider stages skip prompt caching (plain strings) — fine for one-off
+lab runs. (4) NOT runtime-verified — no provisioned infra; a live run needs the
+deployed Worker + `ANTHROPIC_API_KEY` (present) and `OPENAI_API_KEY` for GPT
+stages.
+
+**Gates.** Worker `tsc` clean · `db:generate` no schema changes · web `tsc` clean
+· web `next build` green (`/tools/tailor-lab` 9.89 kB in the route table).
+
+---
+
 ## 2026-07-02 — Résumé tailor template + observability rollout; embedding fix reconciliation
 
 Three things landed this session, plus a genuine conflict with the f-152 work

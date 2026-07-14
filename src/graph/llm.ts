@@ -112,15 +112,53 @@ function toContent(input: Seg | Seg[]): string | TextBlock[] {
   });
 }
 
-/** Anthropic Messages call returning raw text. `system`/`user` accept cacheable segments. */
-export async function anthropicText(
+/**
+ * Normalised token accounting returned by every model call, so callers (e.g. the
+ * prompt lab) can compare cost across providers on one shape. cache* are 0 for
+ * providers without prompt caching.
+ */
+export interface LlmUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+export function emptyUsage(): LlmUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+}
+
+export function addUsage(a: LlmUsage, b: LlmUsage): LlmUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
+  };
+}
+
+/**
+ * Anthropic Messages call returning raw text + usage. `system`/`user` accept
+ * cacheable segments. `anthropicText` below drops the usage for existing callers.
+ */
+export async function callAnthropic(
   env: Env,
   opts: { system: Seg | Seg[]; user: Seg | Seg[]; model: string; maxTokens: number; temperature?: number },
-): Promise<string> {
+): Promise<{ text: string; usage: LlmUsage }> {
   if (!env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not configured");
   let lastErr = "";
+  // Newer models (Sonnet 5, Opus 4.8, …) reject `temperature`; drop it and retry
+  // on that specific 400 instead of failing. Older models keep it.
+  let includeTemperature = true;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
+      const body: Record<string, unknown> = {
+        model: opts.model,
+        max_tokens: opts.maxTokens,
+        system: toContent(opts.system),
+        messages: [{ role: "user", content: toContent(opts.user) }],
+      };
+      if (includeTemperature) body.temperature = opts.temperature ?? 0;
       // Routes via Cloudflare AI Gateway when AI_GATEWAY_URL is set (logs/cost/cache).
       const res = await fetch(anthropicMessagesUrl(env), {
         method: "POST",
@@ -130,32 +168,42 @@ export async function anthropicText(
           "content-type": "application/json",
           ...aiGatewayHeaders(env),
         },
-        body: JSON.stringify({
-          model: opts.model,
-          max_tokens: opts.maxTokens,
-          temperature: opts.temperature ?? 0,
-          system: toContent(opts.system),
-          messages: [{ role: "user", content: toContent(opts.user) }],
-        }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
-        lastErr = `anthropic ${res.status}: ${await res.text()}`;
+        const errText = await res.text();
+        if (res.status === 400 && includeTemperature && /temperature/i.test(errText)) {
+          includeTemperature = false; // retry immediately without temperature
+          continue;
+        }
+        lastErr = `anthropic ${res.status}: ${errText}`;
         await sleep(400 * attempt);
         continue;
       }
       const data = (await res.json()) as {
         content?: Array<{ type: string; text?: string }>;
-        usage?: { cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+        usage?: {
+          input_tokens?: number;
+          output_tokens?: number;
+          cache_read_input_tokens?: number;
+          cache_creation_input_tokens?: number;
+        };
+      };
+      const u = data.usage;
+      const usage: LlmUsage = {
+        inputTokens: u?.input_tokens ?? 0,
+        outputTokens: u?.output_tokens ?? 0,
+        cacheReadTokens: u?.cache_read_input_tokens ?? 0,
+        cacheWriteTokens: u?.cache_creation_input_tokens ?? 0,
       };
       // Surface cache activity so a `wrangler tail` can confirm caching works.
-      const u = data.usage;
-      if (u && ((u.cache_read_input_tokens ?? 0) > 0 || (u.cache_creation_input_tokens ?? 0) > 0)) {
+      if (usage.cacheReadTokens > 0 || usage.cacheWriteTokens > 0) {
         console.log(
           JSON.stringify({
             at: "anthropic.cache",
             model: opts.model,
-            read: u.cache_read_input_tokens ?? 0,
-            write: u.cache_creation_input_tokens ?? 0,
+            read: usage.cacheReadTokens,
+            write: usage.cacheWriteTokens,
           }),
         );
       }
@@ -168,13 +216,21 @@ export async function anthropicText(
         await sleep(400 * attempt);
         continue;
       }
-      return text;
+      return { text, usage };
     } catch (e) {
       lastErr = (e as Error).message;
       await sleep(400 * attempt);
     }
   }
   throw new Error(`anthropicText failed: ${lastErr}`);
+}
+
+/** Anthropic Messages call returning raw text. `system`/`user` accept cacheable segments. */
+export async function anthropicText(
+  env: Env,
+  opts: { system: Seg | Seg[]; user: Seg | Seg[]; model: string; maxTokens: number; temperature?: number },
+): Promise<string> {
+  return (await callAnthropic(env, opts)).text;
 }
 
 /** Anthropic Messages call whose reply we parse as JSON. */
@@ -184,4 +240,101 @@ export async function anthropicJson<T>(
 ): Promise<T> {
   const text = await anthropicText(env, { ...opts, temperature: 0 });
   return extractJson<T>(text);
+}
+
+/** OpenAI chat completion returning raw text + usage (sibling of openaiJson). */
+export async function openaiText(
+  env: Env,
+  opts: { system: string; user: string; model: string; maxTokens: number; temperature?: number; json?: boolean },
+): Promise<{ text: string; usage: LlmUsage }> {
+  if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
+  let lastErr = "";
+  // GPT-5 / o-series reasoning models reject `temperature` (only the default) and
+  // require `max_completion_tokens` instead of `max_tokens`. Adapt on the specific
+  // 400s rather than hardcoding which model needs what.
+  let includeTemperature = true;
+  let useMaxCompletion = false;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const body: Record<string, unknown> = {
+        model: opts.model,
+        ...(opts.json ? { response_format: { type: "json_object" } } : {}),
+        messages: [
+          { role: "system", content: opts.system },
+          { role: "user", content: opts.user },
+        ],
+      };
+      body[useMaxCompletion ? "max_completion_tokens" : "max_tokens"] = opts.maxTokens;
+      if (includeTemperature) body.temperature = opts.temperature ?? 0;
+      const res = await fetch(openaiChatUrl(env), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${env.OPENAI_API_KEY}`,
+          "content-type": "application/json",
+          ...aiGatewayHeaders(env),
+        },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        if (res.status === 400 && !useMaxCompletion && /max_completion_tokens|'max_tokens'/i.test(errText)) {
+          useMaxCompletion = true; // retry with the reasoning-model token param
+          continue;
+        }
+        if (res.status === 400 && includeTemperature && /temperature/i.test(errText)) {
+          includeTemperature = false; // retry without temperature
+          continue;
+        }
+        lastErr = `openai ${res.status}: ${errText}`;
+        await sleep(300 * attempt);
+        continue;
+      }
+      const data = (await res.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+      };
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) {
+        lastErr = "openai empty content";
+        await sleep(300 * attempt);
+        continue;
+      }
+      const u = data.usage;
+      const usage: LlmUsage = {
+        inputTokens: u?.prompt_tokens ?? 0,
+        outputTokens: u?.completion_tokens ?? 0,
+        cacheReadTokens: u?.prompt_tokens_details?.cached_tokens ?? 0,
+        cacheWriteTokens: 0,
+      };
+      return { text: content, usage };
+    } catch (e) {
+      lastErr = (e as Error).message;
+      await sleep(300 * attempt);
+    }
+  }
+  throw new Error(`openaiText failed: ${lastErr}`);
+}
+
+/** OpenAI model ids (gpt-*, o1/o3/o4-*, chatgpt-*) route to the OpenAI API; everything else to Anthropic. */
+export function isOpenAiModel(model: string): boolean {
+  return /^(gpt-|o[1-9]|chatgpt-|text-)/i.test(model);
+}
+
+/**
+ * Provider-dispatching text completion used by the prompt lab: pick OpenAI vs
+ * Anthropic from the model id so any stage can run on either provider. Plain
+ * strings only (no prompt-cache segments) — the lab runs one-off, not hot loops.
+ */
+export async function runChat(
+  env: Env,
+  opts: { system: string; user: string; model: string; maxTokens: number; temperature?: number; json?: boolean },
+): Promise<{ text: string; usage: LlmUsage }> {
+  if (isOpenAiModel(opts.model)) return openaiText(env, opts);
+  return callAnthropic(env, {
+    system: opts.system,
+    user: opts.user,
+    model: opts.model,
+    maxTokens: opts.maxTokens,
+    temperature: opts.temperature,
+  });
 }

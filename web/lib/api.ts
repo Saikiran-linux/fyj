@@ -23,6 +23,9 @@ import type {
   Feedback,
   FeedbackSignal,
   CandidateDocuments,
+  LabConfig,
+  LabResult,
+  LabRunInput,
 } from "./types";
 
 /**
@@ -237,6 +240,17 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ markdown }),
     }),
+
+  // Résumé prompt lab (dev tool) — defaults/models/sample, and a synchronous run.
+  tailorLabConfig: () => req<LabConfig>("/api/tools/tailor-lab"),
+  runTailorLab: (input: LabRunInput) =>
+    req<LabResult>("/api/tools/tailor-lab", { method: "POST", body: JSON.stringify(input) }),
+  // Parse an uploaded résumé (PDF/DOCX/text) to plain text for the master field.
+  parseTailorLabResume: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return upload<{ text: string; kind: string; name: string }>("/api/tools/tailor-lab/parse", fd);
+  },
 
   // Calendar (f-139 P4) — month: 0-11
   listCalendar: (params?: { year?: number; month?: number }) => {
