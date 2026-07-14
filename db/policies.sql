@@ -263,24 +263,16 @@ begin
 end $$;
 
 -- ============================================================================
--- System role — the TRUSTED cron/queue Worker (matcher) connects as this.
+-- No separate matcher role (ops_system is retired).
 -- ============================================================================
--- The continuous matcher legitimately spans all orgs (list active campaigns),
--- which RLS blocks for ops_app. ops_system has BYPASSRLS and is used ONLY by the
--- background Worker over its own Hyperdrive binding — NEVER on the request path.
--- Each match run still touches exactly one campaign's data.
-do $$
-begin
-  if not exists (select 1 from pg_roles where rolname = 'ops_system') then
-    create role ops_system login bypassrls;
-  end if;
-end $$;
-
-grant usage on schema public, app to ops_system;
-grant select, insert, update, delete on all tables in schema public to ops_system;
-grant execute on all functions in schema app to ops_system;
-alter default privileges in schema public
-  grant select, insert, update, delete on tables to ops_system;
+-- The background matcher (cron/queue) connects as the same non-BYPASSRLS
+-- ops_app role; its cross-tenant steps go through the SECURITY DEFINER
+-- functions in this file (app.list_active_campaigns / app.get_campaign_for_match
+-- / app.record_campaign_run), each scoped to a single campaign's data. An
+-- earlier design used a BYPASSRLS `ops_system` role, but Neon's owner role
+-- cannot grant BYPASSRLS via SQL, so it never actually worked and is no longer
+-- created here. If a vestigial `ops_system` role exists in your Neon project,
+-- remove it manually:  drop owned by ops_system; drop role if exists ops_system;
 
 
 -- ============================================================================
@@ -335,8 +327,8 @@ begin
 end $$;
 
 -- These are defined AFTER the blanket grant above, so grant them explicitly.
-grant execute on function app.resolve_staff_memberships(text) to ops_app, ops_system;
-grant execute on function app.resolve_client_principal(text)  to ops_app, ops_system;
+grant execute on function app.resolve_staff_memberships(text) to ops_app;
+grant execute on function app.resolve_client_principal(text)  to ops_app;
 grant execute on function app.bootstrap_org_for_user(text, text) to ops_app;
 
 
@@ -431,9 +423,9 @@ begin
   update public.campaigns set last_run_at = now() where id = p_campaign_id;
 end $$;
 
-grant execute on function app.list_active_campaigns()           to ops_app, ops_system;
-grant execute on function app.get_campaign_for_match(uuid)      to ops_app, ops_system;
-grant execute on function app.record_campaign_run(uuid, jsonb)  to ops_app, ops_system;
+grant execute on function app.list_active_campaigns()           to ops_app;
+grant execute on function app.get_campaign_for_match(uuid)      to ops_app;
+grant execute on function app.record_campaign_run(uuid, jsonb)  to ops_app;
 
 -- f-141: a UI "campaign" = a client_profiles row + its 1:1 campaigns row. The
 -- request role can't INSERT/UPDATE campaigns directly (no write policy on the
@@ -464,7 +456,7 @@ begin
   return v_campaign;
 end $$;
 
-grant execute on function app.upsert_campaign_for_profile(uuid, boolean, text) to ops_app, ops_system;
+grant execute on function app.upsert_campaign_for_profile(uuid, boolean, text) to ops_app;
 
 
 -- ============================================================================

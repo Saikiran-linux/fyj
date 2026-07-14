@@ -35,26 +35,27 @@ Enforced by **Postgres RLS on Neon**, not app code:
 - Policies + helpers live in [`db/policies.sql`](db/policies.sql). Two principals: **staff**
   (admin/operator/viewer) and **client** (read-only + feedback-insert-only).
 - The request Worker connects as **`ops_app`** (no `BYPASSRLS`) → forgetting a claim fails
-  *closed*. The trusted background matcher connects as **`ops_system`** (`BYPASSRLS`), never on
-  the request path.
+  *closed*. The background matcher runs as the same `ops_app` role; its cross-tenant steps go
+  through `SECURITY DEFINER` functions (`app.list_active_campaigns`,
+  `app.get_campaign_for_match`, `app.record_campaign_run`) — nothing connects with `BYPASSRLS`.
 
 ## Setup
 
 1. **Neon** — create a project; run `create extension if not exists vector; create extension if not exists pgcrypto;`. Grab the **direct** (migrations) and **pooled** (Hyperdrive) URLs.
 2. **Install** — `npm install`.
 3. **Schema** — `DATABASE_URL=<direct> npm run db:generate && DATABASE_URL=<direct> npm run db:migrate`.
-4. **RLS + roles** — `DATABASE_URL=<direct> npm run db:policies` (creates `ops_app`/`ops_system`, RLS, helpers). Set their passwords in Neon.
+4. **RLS + roles** — `DATABASE_URL=<direct> npm run db:policies` (creates `ops_app`, RLS, helpers). Set its password in Neon.
 5. **Hyperdrive** — `wrangler hyperdrive create fyj-ops --connection-string="<pooled, as ops_app>"`; paste the id into `wrangler.jsonc`.
 6. **R2 / KV / Queue** — create `fyj-resumes`, a KV namespace, and the `fyj-match` queue; fill the ids in `wrangler.jsonc`.
 7. **Secrets** — `wrangler secret put BETTER_AUTH_SECRET` (and `VOYAGE_API_KEY` for embeddings+rerank, `OPENAI_API_KEY` for intake extraction/summarize, `ANTHROPIC_API_KEY`, `FYJ_INDEX_URL`, `FYJ_INDEX_KEY`). Local dev: copy `.dev.vars.example` → `.dev.vars`.
 8. **Types** — `npm run cf-typegen` (regenerates `worker-configuration.d.ts` from bindings).
 9. **Run** — `npm run dev`; **deploy** — `npm run deploy`.
 
-## Status (P1 foundation)
+## Status
 
-Scaffolded: tenancy schema (`src/db/schema.ts`), RLS/GUC/roles (`db/policies.sql`), tenant DB
-client (`src/db/client.ts`), read-only index client (`src/index-client.ts`), the matcher
-(`src/matcher.ts`), and the Worker entry (`src/index.ts`).
-
-TODO next: Better Auth wiring + the tenant-scoped API routes + repository layer (f-133), then
-the Next.js UI shell. The fyj-side `search_jobs`/`get_job` RPCs (f-132) ship in `fyj_scanner`.
+Live: the Worker is deployed on Cloudflare (`fyj-ops-console`), the UI on Vercel, and Neon +
+Hyperdrive + R2 + KV + Queues are provisioned (see [`docs/INFRA-SETUP.md`](docs/INFRA-SETUP.md)).
+Shipped: auth + tenancy/RLS, clients/profiles/campaigns, résumé intake → embed → hybrid match →
+Voyage rerank, tailoring, dashboard analytics, and the review queue — the trail lives in
+[`feature_list.json`](feature_list.json) (f-130…f-153) and `progress.md`. Current workstream:
+the console redesign + prototype feature adoption (f-154+).
