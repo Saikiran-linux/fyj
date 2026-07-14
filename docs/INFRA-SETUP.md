@@ -39,9 +39,10 @@
 
 ## 2. Apply schema + policies (after step 1; I can drive this once URLs exist)
 - [ ] `npm run db:migrate` — creates the 14 tables from `drizzle/0000_*` (10 tenancy + 4 Better Auth).
-- [ ] `npm run db:policies` — RLS + `app.*` GUC helpers + resolvers + `ops_app`/`ops_system` roles.
-- [ ] Set passwords for `ops_app` and `ops_system` in Neon (the policies file creates the roles
-      with `LOGIN`; set passwords out-of-band): `alter role ops_app with password '...';`
+- [ ] `npm run db:policies` — RLS + `app.*` GUC helpers + resolvers + the `ops_app` role.
+      (`ops_system` is retired — the matcher runs as `ops_app` via SECURITY DEFINER functions.)
+- [ ] Set a password for `ops_app` in Neon (the policies file creates the role
+      with `LOGIN`; set the password out-of-band): `alter role ops_app with password '...';`
 - [ ] Sanity: `select rolbypassrls from pg_roles where rolname='ops_app';` must be **false**.
 
 ## 3. Cloudflare resources → fill the placeholder ids in `wrangler.jsonc`

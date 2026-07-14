@@ -218,6 +218,55 @@
       "dependencies": ["f-141"],
       "status": "done",
       "evidence": "Gates green: `npm run typecheck` (Worker) clean; `npm run db:generate` -> no schema changes (no DB touched); web `npm run typecheck` clean; web `npm run build` succeeds with the new route present (/tools/tailor-lab, 9.89 kB). NOT runtime-verified end-to-end — no provisioned infra; a live run needs the Worker deployed with ANTHROPIC_API_KEY (present per user) and, for GPT stages, OPENAI_API_KEY. Runtime caveat: the POST runs the whole pipeline synchronously in-request (not the queue) so the trace can return at once — max revise iterations is capped at 3 to stay within the request budget. Model price table in tailor-lab.ts (LAB_MODELS) is approximate/display-only and easy to edit."
+    },
+    {
+      "id": "f-154",
+      "name": "Console redesign P1 — prototype design system (tokens, Geist, icon navbar, prefs, primitives)",
+      "description": "Adopt the operator-dashboard prototype's design system (source: Desktop/dashboard_new 'Dashboard UI staffing/dashboard', a static React/Babel mock) onto web/: map its oklch palette + 8px radius scale into globals.css shadcn tokens (removing the global 'border-radius: 0 !important' square-corners override), swap Source Sans 3 -> Geist + Geist Mono via next/font, rework the top navbar to the prototype's icon-forward style with hover tooltips + badge slots and add the new destinations Activity / Inbox / Chat / Write (placeholder pages until f-156/f-157/f-158), add Candidate-portal + Preferences items to the profile menu, introduce user preferences (dark mode / accent / density / heading font) persisted in localStorage and applied pre-paint, and port the prototype's presentational primitives (FitScore, CompanyLogo marks, DotColumns/DotTrack/DotBlock charts, braille loaders) as typed components.",
+      "dependencies": ["f-150"],
+      "status": "in-progress"
+    },
+    {
+      "id": "f-155",
+      "name": "Console redesign P2 — surface richness at prototype parity + placement stage writes",
+      "description": "Bring the existing surfaces to the prototype's interaction depth on live data: Dashboard (KPI sparklines + deltas, throughput series toggle, funnel, leaderboard, live-apps table), Candidates (collapsible roster + per-candidate metrics), Profile (prototype tabs, campaign cards + autopilot toggle via existing PATCH /api/profiles/:id), Explore (discovery rails from recent_jobs, MatchCard grid, detail drawer on real get_job description, filters/sort), Review (inbox-style match queue rendering the campaign_matches fit/confidence/rationale/skills/guardrails columns the matcher already populates — no new report backend), Calendar restyle. Backend: PATCH /api/placements/:id (status/notes/follow_ups) + POST /api/placements so application stages are mutable from the lists — stages stay tables/lists per the demo, NO kanban board.",
+      "dependencies": ["f-154"],
+      "status": "not-started"
+    },
+    {
+      "id": "f-156",
+      "name": "Write — org resume library + standalone tailor workspace",
+      "description": "New resume_documents table (org_id, client_id nullable, title, body_json, version, r2_pdf_key) + RLS in the same migration; /api/resumes CRUD + /api/resumes/ai LLM line-transform (improve/shorter/longer/continue via the tailor LLM plumbing). Frontend: /write library (create/open/duplicate/delete + block editor with slash menu, AI chips, drag reorder — ported from prototype dash-write.jsx + PlateKit) and /tailor/[matchId] full-screen workspace (variants, JD coverage ring, base->tailored diff, AI side panel, version history) wired to the existing getTailoredResume/saveTailoredResume endpoints + lib/resume-render.ts for PDF export.",
+      "dependencies": ["f-141", "f-154"],
+      "status": "not-started"
+    },
+    {
+      "id": "f-157",
+      "name": "Activity — unified daily worklist + autopilot surface",
+      "description": "GET /api/activity/worklist derives the operator's day from live pipeline state (new matches to review, approved-but-unsent resumes, employer replies once f-158 lands, stale drafts) grouped review/send/reply/decide with per-task done-state persistence; per-candidate daily application targets. Frontend: /activity page (category sections + done toggles + right rail with targets and today's calendar) replacing the placeholder, plus an autopilot section (profiles with autopilot on + recent automatic actions).",
+      "dependencies": ["f-155"],
+      "status": "not-started"
+    },
+    {
+      "id": "f-158",
+      "name": "Messaging — operator inbox (email via Postmark) + candidate chat",
+      "description": "New threads (channel email|chat, client_id, subject, participants) + messages (direction, author, body, attachments jsonb) tables + RLS; endpoints for list/read/create thread, post message, R2 attachment upload, read receipts; Postmark outbound send + signature-verified inbound webhook POST /api/inbound/email parsing recruiter replies into threads (optionally advancing the linked placement stage via the f-155 writes); realtime = polling/SSE v1 (Durable Object later). Frontend: /inbox (filters, candidate selector, thread list, conversation pane, compose + attachments) and /chat (candidate threads) ported from prototype dash-inbox/dash-chat; navbar unread badges.",
+      "dependencies": ["f-154"],
+      "status": "not-started"
+    },
+    {
+      "id": "f-159",
+      "name": "Calendar — events CRUD + week view + schedule modal",
+      "description": "New calendar_events table (org_id, client_id, kind, start/end, attendees, job_id, notes) + RLS; GET/POST/PATCH/DELETE /api/calendar merged with the existing placement-derived events. Frontend: week view + a Schedule modal on /calendar (month+agenda restyle lands in f-155).",
+      "dependencies": ["f-154"],
+      "status": "not-started"
+    },
+    {
+      "id": "f-160",
+      "name": "Apply-on-behalf (human-in-the-loop) + notifications",
+      "description": "Notifications table + GET /api/notifications + read receipts driving the navbar badges; a guided apply checklist in Profile/Review — open the posting via get_job.url, attach the tailored CV, mark the placement applied (reuses f-155 placement writes). Explicitly NO ATS auto-submit automation (ToS risk; deferred by decision D3 of the redesign plan). Client portal + onboarding remain the pre-existing f-137 / f-145.",
+      "dependencies": ["f-155", "f-158"],
+      "status": "not-started"
     }
   ]
 }

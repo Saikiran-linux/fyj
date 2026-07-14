@@ -570,7 +570,7 @@ export function createApi() {
         summary: intake.embedInput, // JD-style precis — reused by enrichment/tailoring
       },
       embedding: intake.embedding,
-      embeddingModel: intake.embeddingModel ?? "text-embedding-3-small",
+      embeddingModel: intake.embeddingModel ?? "voyage-4-large",
     });
     if (!row) return c.json({ error: "not_found" }, 404);
 
