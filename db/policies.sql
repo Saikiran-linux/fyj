@@ -84,6 +84,7 @@ alter table public.campaign_matches enable row level security;
 alter table public.reports          enable row level security;
 alter table public.placements       enable row level security;
 alter table public.feedback         enable row level security;
+alter table public.resume_documents enable row level security;
 alter table public.audit_log        enable row level security;
 
 -- ── Better Auth tables (user / session / account / verification) ──────────
@@ -200,6 +201,29 @@ create policy reports_staff_write on public.reports for all
   with check (app.current_principal() = 'staff'
          and app.current_role() in ('admin','operator')
          and app.can_access_client(client_id));
+
+-- ── resume_documents (Write library, f-156) — staff-only ──────────────
+-- client_id is NULLABLE (an org-wide draft), so the usual can_access_client
+-- one-liner gets an "or client_id is null" escape: any staff seat in the org
+-- may read org-wide drafts; candidate-scoped docs follow the same
+-- operator-book gating as every other client child table. Never exposed to
+-- the client portal (like reports — these are working documents).
+drop policy if exists resume_documents_select on public.resume_documents;
+create policy resume_documents_select on public.resume_documents for select
+  using (org_id = app.current_org_id()
+         and app.current_principal() = 'staff'
+         and (client_id is null or app.can_access_client(client_id)));
+
+drop policy if exists resume_documents_staff_write on public.resume_documents;
+create policy resume_documents_staff_write on public.resume_documents for all
+  using (org_id = app.current_org_id()
+         and app.current_principal() = 'staff'
+         and app.current_role() in ('admin','operator')
+         and (client_id is null or app.can_access_client(client_id)))
+  with check (org_id = app.current_org_id()
+         and app.current_principal() = 'staff'
+         and app.current_role() in ('admin','operator')
+         and (client_id is null or app.can_access_client(client_id)));
 
 -- ── feedback (staff + client read; client OR staff insert, immutable) ─
 drop policy if exists feedback_select on public.feedback;

@@ -27,6 +27,10 @@ import type {
   LabConfig,
   LabResult,
   LabRunInput,
+  ResumeDocument,
+  ResumeDocumentListRow,
+  ResumeDocBody,
+  AiEditKind,
 } from "./types";
 
 /**
@@ -233,6 +237,8 @@ export const api = {
     const q = qs.toString();
     return req<Match[]>(`/api/matches${q ? `?${q}` : ""}`);
   },
+  // One match, hydrated with job detail — the standalone tailor workspace (f-156).
+  getMatch: (matchId: string) => req<Match>(`/api/matches/${matchId}`),
   approveMatch: (matchId: string) =>
     req<ApproveMatchResult & { tailoring?: boolean }>(`/api/matches/${matchId}/approve`, {
       method: "POST",
@@ -260,6 +266,36 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ markdown }),
     }),
+
+  // Resume documents (f-156) — the Write library + tailor-workspace persistence.
+  listResumeDocs: (params?: { clientId?: string; matchId?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.clientId) qs.set("clientId", params.clientId);
+    if (params?.matchId) qs.set("matchId", params.matchId);
+    const q = qs.toString();
+    return req<ResumeDocumentListRow[]>(`/api/resumes${q ? `?${q}` : ""}`);
+  },
+  getResumeDoc: (id: string) => req<ResumeDocument>(`/api/resumes/${id}`),
+  createResumeDoc: (input: {
+    title: string;
+    clientId?: string | null;
+    sourceMatchId?: string | null;
+    bodyJson?: ResumeDocBody;
+  }) => req<ResumeDocument>("/api/resumes", { method: "POST", body: JSON.stringify(input) }),
+  updateResumeDoc: (
+    id: string,
+    input: { title?: string; clientId?: string | null; bodyJson?: ResumeDocBody },
+  ) => req<ResumeDocument>(`/api/resumes/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteResumeDoc: (id: string) =>
+    req<{ ok: true; id: string }>(`/api/resumes/${id}`, { method: "DELETE" }),
+  // AI line transform for the block editors (Haiku on the Worker; returns the
+  // rewritten line only).
+  resumeAi: (input: {
+    kind: AiEditKind;
+    text: string;
+    prompt?: string;
+    context?: { jobTitle?: string; company?: string; missingSkills?: string[] };
+  }) => req<{ text: string }>("/api/resumes/ai", { method: "POST", body: JSON.stringify(input) }),
 
   // Résumé prompt lab (dev tool) — defaults/models/sample, and a synchronous run.
   tailorLabConfig: () => req<LabConfig>("/api/tools/tailor-lab"),

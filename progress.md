@@ -4,6 +4,69 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-07-14 (later) — P3: Write library + standalone tailor workspace (f-156); prod Worker verified live
+
+**Live verification first (user request).** The user had deployed the Worker; verified the deploy
+end-to-end with the operator login (`vamshik`): sign-in via `POST /api/auth/sign-in/username` →
+`/api/me` resolves `staff/operator`; `/api/clients` returns the real book; `/api/applications` 6
+rows; dashboard KPIs + 50-match review queue live; and the **f-155 placement stage-write was
+driven for real** — `PATCH /api/placements/ad0f231e…` `ready_to_send → interview → ready_to_send`
+(fresh `stageChangedAt` stamps each way; invalid status → 400; bogus id → 404). That closes the
+"drive a live stage change after deploy" item from the previous session. Environment notes: curl
+on this box needs `--ssl-no-revoke` (Norton TLS intercept breaks schannel revocation checks), and
+`interviewing` is not a stage — the enum value is `interview`.
+
+**f-156 backend.** New `resume_documents` table (`src/db/schema.ts` →
+`drizzle/0005_luxuriant_starhawk.sql`): org_id, **nullable client_id** (org-wide drafts),
+`source_match_id` → campaign_matches (links a workspace doc to its match; extension beyond the
+planned column list, needed for find-doc-by-match), title, `body_json` (opaque editor doc:
+{meta, blocks, versions}), version (bumps on every body write), r2_pdf_key (null for now —
+export is client-side print-to-PDF like the drawer). RLS in `db/policies.sql`: staff-only, the
+usual `can_access_client` gate with an `or client_id is null` escape for org-wide drafts; never
+portal-visible. Repo CRUD is audited; `repo.getMatch` added (single hydrated match). Routes:
+`GET/POST /api/resumes`, `GET/PATCH/DELETE /api/resumes/:id`, `GET /api/matches/:id`, and
+**`POST /api/resumes/ai`** — Haiku line transforms (improve/grammar/shorter/longer/simplify/
+continue/custom) with a system prompt that hard-bans invented employers/dates/metrics; takes
+optional {jobTitle, company, missingSkills} context from the workspace. Pure LLM call, no DB.
+
+**f-156 frontend.** `web/lib/resume-doc.ts` — the block model + **markdown round-trip in the
+exact dialect `lib/resume-render.ts` renders** (`# Name`, contact para, `## SECTION`,
+`### Role | Company<TAB>Date`, bullets; skills-list paragraphs under a Skills section parse back
+into a chips block), plus coverage calc, LCS word-diff, docAddSkill. `components/resume-editor.tsx`
+— the PlateKit port: contentEditable rows seeded on id/epoch (caret survives typing), hover
+gutter (add/drag-reorder), Enter/Backspace block management, "/" slash menu, floating
+bold/italic/underline/code/link toolbar, skills chips, inline-editable job rows, word-diff view,
+and **real AI chips** calling /api/resumes/ai with accept/retry/discard (prototype's canned
+rewrites replaced). `/write` — library grid (blank / from-candidate seeded from
+parsedProfile.candidate / duplicate / delete) + editor with 800ms-debounced autosave, preview
+iframe, Download PDF. `/tailor/[matchId]` — full workspace: loads the REAL tailored markdown
+(polls while the queue tailors; kicks if missing, same contract as the drawer), rail with JD
+coverage ring + per-requirement add buttons + rationale + guardrails, diff vs the as-loaded
+generated version, **Save = saveTailoredResume** (the store the drawer/documents/send flow read),
+**Save version → snapshots into the linked resume_documents row** (survives reloads, shows in
+/write), Regenerate (re-enqueue + poll). Drawer gained an "Open workspace ↗" link.
+
+**Deliberate deviations from the prototype** (why): no ghost-text autocomplete (canned fake), no
+margin comments (no persistence model until messaging f-158), no AI dock chat (inline only), no
+synthetic variants (production has ONE real tailored output + Regenerate; fake variants would
+lie), meta is name+contact only (that's what the markdown/PDF engine renders).
+
+**Gates.** `./init.sh` green (worker tsc; db:generate no-drift after 0005; web tsc) + web
+`next build` green — 21 routes incl. `/tailor/[matchId]` (4.97 kB) and the real `/write` (3.45 kB).
+
+**NOT done — needs the user (blocked in-session):**
+1. `npm run db:migrate` + `npm run db:policies` with the Neon **owner** `DATABASE_URL` (no cred
+   in this session; ops_app can't run DDL). Applies drizzle 0005 + the resume_documents policies.
+2. `npm run deploy` (wrangler is authed but the permission classifier denied the deploy; set
+   `NODE_EXTRA_CA_CERTS=$HOME/.career-ops/norton-root.pem` first). Until both run, the deployed
+   Worker lacks the new routes (/api/resumes* 404; after deploy-without-migrate they'd 500 —
+   run the migration first).
+3. Vercel ships /write + /tailor on merge to main (PR #35 first, then this branch's PR).
+Post-deploy smoke: create/edit a doc in /write → `resume_documents` row; open a tailored match's
+workspace → Save → reports.full_markdown updates; POST /api/resumes/ai returns a rewritten line.
+
+---
+
 ## 2026-07-14 — Console redesign kickoff: hygiene (P0) + prototype design system (f-154, P1)
 
 Start of the console-redesign workstream (plan: fyj_scanner plan doc; tracker: f-154…f-160,

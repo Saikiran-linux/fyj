@@ -277,6 +277,68 @@ export interface CalendarEvent {
   companyName: string | null;
 }
 
+// ── resume documents (Write library + tailor workspace, f-156) ──────────
+
+/** One block of the résumé block editor. Stored as-is in `resume_documents.body_json`. */
+export type ResumeBlock =
+  | { id: string; type: "section" | "h" | "p" | "bullet"; html: string }
+  | { id: string; type: "divider" }
+  | { id: string; type: "job"; data: { title: string; company: string; when: string } }
+  | { id: string; type: "skills"; data: { items: string[] } };
+
+export interface ResumeDocMeta {
+  name: string;
+  contact: string; // one line: "City, ST · you@email.com · linkedin.com/in/you"
+}
+
+export interface ResumeDocVersion {
+  at: string; // ISO timestamp
+  label: string;
+  markdown: string;
+}
+
+/** The editor document persisted in `resume_documents.body_json`. */
+export interface ResumeDocBody {
+  meta: ResumeDocMeta;
+  blocks: ResumeBlock[];
+  versions?: ResumeDocVersion[]; // newest first, capped client-side
+}
+
+export interface ResumeDocumentListRow {
+  id: string;
+  clientId: string | null;
+  clientName: string | null;
+  sourceMatchId: string | null;
+  title: string;
+  version: number;
+  updatedAt: string;
+  createdAt: string;
+}
+
+export interface ResumeDocument {
+  id: string;
+  orgId: string;
+  clientId: string | null;
+  sourceMatchId: string | null;
+  title: string;
+  bodyJson: Partial<ResumeDocBody>;
+  version: number;
+  r2PdfKey: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** AI line-transform kinds accepted by POST /api/resumes/ai. */
+export type AiEditKind =
+  | "improve"
+  | "grammar"
+  | "shorter"
+  | "longer"
+  | "simplify"
+  | "continue"
+  | "custom";
+
 // ── résumé prompt lab (dev tool; mirrors src/graph/tailor-lab.ts) ────────
 export interface LabModel {
   id: string;

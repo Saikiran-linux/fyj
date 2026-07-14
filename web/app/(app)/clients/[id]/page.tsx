@@ -763,6 +763,15 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
           </div>
           <div className="flex items-center gap-2">
             {status === "ready" && (
+              <Link
+                href={`/tailor/${matchId}`}
+                className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                title="Full tailoring workspace — block editor, JD coverage, versions"
+              >
+                Open workspace ↗
+              </Link>
+            )}
+            {status === "ready" && (
               <div className="flex rounded-md border border-border p-0.5">
                 {(["preview", "edit"] as const).map((v) => (
                   <button
