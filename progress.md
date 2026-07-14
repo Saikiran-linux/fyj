@@ -4,6 +4,45 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-07-14 — Console redesign kickoff: hygiene (P0) + prototype design system (f-154, P1)
+
+Start of the console-redesign workstream (plan: fyj_scanner plan doc; tracker: f-154…f-160,
+seeded this session — portal/onboarding/billing remain f-137/f-145/f-138). Branch
+`claude/console-redesign`, stacked on `claude/tailor-lab-gpt-models` (PR #35, **open — merge
+it first**, then this branch's PR rebases clean).
+
+**P0 hygiene (commit `e0c92ef`).** Retired the vestigial `ops_system` BYPASSRLS role:
+`db/policies.sql` no longer creates it and all grants dropped `, ops_system` (fresh-DB safe;
+manual cleanup documented in the file). Corrected the stale matcher/BYPASSRLS claims in
+`README.md` + `CLAUDE.md` (matcher runs as `ops_app` through the SECURITY DEFINER `app.*`
+fns), refreshed the ancient "P1 foundation" README status + CLAUDE.md runtime caveat,
+fixed `src/api.ts` resume-attach fallback `embeddingModel` (`text-embedding-3-small` →
+`voyage-4-large`, metadata-only), and seeded f-154…f-160 into `feature_list.json`.
+
+**P1 design system (f-154).** `web/app/globals.css` remapped to the prototype's palette —
+cool hue-275 neutrals (paper `oklch(0.977 0.002 270)`, ink `0.25/275`), muted-indigo
+`--primary oklch(0.54 0.155 277)`, semantic ok/info/warn/bad, prototype dark block — with
+the 8px radius scale restored (**removed `border-radius: 0 !important`**); `--accent` is a
+`color-mix` wash off `--primary` so the runtime accent propagates. Fonts: Source Sans 3 →
+**Geist + Geist Mono** (`next/font`), `--font-heading` var + `.label` mono-uppercase utility.
+Navbar reworked to the prototype's icon-forward style (tooltips, active underline, badge
+slots left un-faked) with new destinations **Activity / Inbox / Chat / Write** (Placeholder
+pages pointing at f-157/f-158/f-156) + Candidate portal (`/portal`, public teaser page) +
+**Preferences** dialog (dark / accent / density / heading font → `lib/prefs.ts`,
+localStorage `fyj_prefs_v1`, pre-paint boot script in `app/layout.tsx` — keep the two in
+sync). Ported primitives: `components/primitives.tsx` (FitScore, CompanyLogo marks,
+DotColumns/DotTrack/DotBlock, braille loaders).
+
+**Gates.** Worker `tsc` clean; web `tsc` clean; web `next build` green (20 routes incl. the
+5 new). Live-verified on `next dev` + browser: body font = Geist, `--radius` 8px with real
+10px card corners, `--primary`/`--background` = prototype values. NOT yet verified: the
+pre-paint prefs boot in a real browser (permission-classifier outage mid-session) — flip
+`fyj_prefs_v1` and reload to confirm no-flash dark/accent.
+
+**Open for the user:** merge PR #35, then the redesign PR; `npm run deploy` (wrangler is
+authed) so prod picks up the api.ts/policies hygiene — policies.sql re-apply is optional
+(the retired-role edit is inert on an existing DB).
+
 ## 2026-07-02 — Résumé Tailoring Lab (prompt/model A/B harness, f-153)
 
 Built a staff-only experimentation page to A/B tailoring **prompts** and **model
