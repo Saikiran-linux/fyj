@@ -76,9 +76,11 @@ lie), meta is name+contact only (that's what the markdown/PDF engine renders).
 **Still open:**
 1. **Rotate the Neon owner password** — pasted in chat this session (third occurrence of the
    pattern; docs/INFRA-SETUP.md standing rule).
-2. Vestigial `ops_system` role still exists on live Neon (P0 documented manual cleanup; the
-   permission classifier vetoed dropping it from here): `drop owned by ops_system; drop role if
-   exists ops_system;`. It's non-BYPASSRLS and unused — inert meanwhile.
+2. ~~Vestigial `ops_system` role~~ — DROPPED later this session on explicit user authorization.
+   Note the Neon quirk: `neondb_owner` isn't superuser, so `DROP OWNED BY ops_system` needs
+   `grant ops_system to neondb_owner;` first (42501 otherwise). Verified after: role gone,
+   `ops_app` grants intact + non-BYPASSRLS, live `/api/clients` still serves. P0's manual-cleanup
+   item is fully closed.
 3. Vercel ships /write + /tailor on merge to main (PR #35 first, then this branch's PR). UI-level
    smoke after merge: create/edit a doc in /write; open a match workspace → Save → drawer shows
    the edit; AI chip accept path.
