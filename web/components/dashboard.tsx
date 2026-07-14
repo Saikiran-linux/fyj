@@ -13,6 +13,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Avatar } from "@/components/ui/avatar";
 import { Chip, statusTone } from "@/components/ui/chip";
+import { CompanyLogo, DotColumns } from "@/components/primitives";
 import { cn } from "@/lib/utils";
 import type {
   FunnelRow,
@@ -54,7 +55,7 @@ function Sparkline({ data, width = 96, height = 28 }: { data: number[]; width?: 
       width={width}
       height={height}
       viewBox={`0 0 ${width} ${height}`}
-      className="text-muted-foreground/70"
+      className="text-primary/70"
       preserveAspectRatio="none"
       aria-hidden
     >
@@ -63,39 +64,36 @@ function Sparkline({ data, width = 96, height = 28 }: { data: number[]; width?: 
   );
 }
 
-function MiniBars({ data, height = 140 }: { data: number[]; height?: number }) {
-  const max = Math.max(...data, 1);
-  return (
-    <div className="flex items-end gap-[3px]" style={{ height }}>
-      {data.map((v, i) => (
-        <div
-          key={i}
-          className="flex-1 bg-foreground/80"
-          style={{ height: `${Math.max(2, (v / max) * height)}px` }}
-          title={String(v)}
-        />
-      ))}
-    </div>
-  );
-}
-
 export function KpiCard({
   label,
   value,
   sub,
   spark,
+  delta,
 }: {
   label: string;
   value: string | number;
   sub: string;
   spark: number[];
+  /** % change vs the prior period; null = not enough data to say. */
+  delta?: number | null;
 }) {
   return (
     <Card size="sm">
       <CardContent className="flex flex-col gap-2">
-        <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-          {label}
-        </span>
+        <div className="flex items-center justify-between gap-2">
+          <span className="label">{label}</span>
+          {delta != null && (
+            <span
+              className={cn(
+                "flex items-center gap-0.5 font-mono text-[11px] font-semibold tabular-nums",
+                delta >= 0 ? "text-success" : "text-destructive",
+              )}
+            >
+              {delta >= 0 ? "↑" : "↓"} {Math.abs(delta)}%
+            </span>
+          )}
+        </div>
         <div className="flex items-end justify-between gap-2">
           <span className="text-2xl font-semibold tabular-nums">{value}</span>
           <Sparkline data={spark} />
@@ -139,7 +137,11 @@ export function ThroughputCard({ trends }: { trends: TrendPoint[] }) {
           <span className="text-2xl font-semibold tabular-nums">{total}</span>
           <span className="text-xs text-muted-foreground">last 30 days</span>
         </div>
-        {data.length > 0 ? <MiniBars data={data} /> : <EmptyHint label="No throughput data yet." />}
+        {data.length > 0 ? (
+          <DotColumns data={data} height={140} />
+        ) : (
+          <EmptyHint label="No throughput data yet." />
+        )}
         <div className="flex justify-between text-xs text-muted-foreground">
           <span>30 days ago</span>
           <span>peak {peak}/day</span>
@@ -165,10 +167,13 @@ export function FunnelCard({ rows }: { rows: FunnelRow[] }) {
           return (
             <div key={r.label} className="flex items-center gap-3">
               <span className="w-28 shrink-0 text-xs text-muted-foreground">{r.label}</span>
-              <div className="h-2.5 flex-1 bg-muted">
+              <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-muted">
                 <div
-                  className={cn("h-full", i >= rows.length - 1 ? "bg-success" : "bg-foreground/80")}
-                  style={{ width: `${Math.max(2, frac * 100)}%` }}
+                  className={cn(
+                    "h-full rounded-full",
+                    i >= rows.length - 1 ? "bg-success" : "bg-primary",
+                  )}
+                  style={{ width: `${Math.max(2, frac * 100)}%`, opacity: 1 - i * 0.09 }}
                 />
               </div>
               <span className="w-16 shrink-0 text-right text-sm tabular-nums">
@@ -318,9 +323,19 @@ export function ApplicationsTable({ rows }: { rows: ApplicationRow[] }) {
                     {a.clientName}
                   </span>
                 </TableCell>
-                {/* Role + Company are hydrated from the index in a later phase. */}
-                <TableCell className="text-muted-foreground">—</TableCell>
-                <TableCell className="text-muted-foreground">—</TableCell>
+                <TableCell className={a.jobTitle ? "" : "text-muted-foreground"}>
+                  {a.jobTitle ?? "—"}
+                </TableCell>
+                <TableCell className={a.companyName ? "" : "text-muted-foreground"}>
+                  {a.companyName ? (
+                    <span className="flex items-center gap-2">
+                      <CompanyLogo company={a.companyName} size={20} />
+                      {a.companyName}
+                    </span>
+                  ) : (
+                    "—"
+                  )}
+                </TableCell>
                 <TableCell>
                   <Chip tone={statusTone(a.status)}>{a.status.replace(/_/g, " ")}</Chip>
                 </TableCell>

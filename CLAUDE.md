@@ -36,8 +36,9 @@ fyj_scanner repo (the job index, READ-ONLY to us)      THIS repo (fyj ops-consol
 
 1. **RLS is the tenant boundary, not app code.** Every tenant data access goes through the
    repository → `withTenant()` → per-request `SET LOCAL app.*` GUCs. Forgetting them fails CLOSED
-   (every policy denies). The request role `ops_app` must stay **non-BYPASSRLS**; only the
-   background matcher uses `ops_system` (BYPASSRLS), never on the request path.
+   (every policy denies). The request role `ops_app` must stay **non-BYPASSRLS**; the background
+   matcher runs as `ops_app` too — its cross-tenant steps live in `SECURITY DEFINER` `app.*`
+   functions, and nothing ever connects with BYPASSRLS.
 2. **No cross-DB joins / FKs to the index.** `campaign_matches` stores `job_id`+`company_id`;
    hydrate detail via `get_job` + KV. The index is read-only — never write to it from here.
 3. **Schema changes go through `src/db/schema.ts` + `drizzle-kit generate`; RLS through
@@ -51,7 +52,7 @@ fyj_scanner repo (the job index, READ-ONLY to us)      THIS repo (fyj ops-consol
 
 ## Working rules
 
-- **One feature at a time** from `feature_list.json` (current next: `f-134`, gated on `f-infra`).
+- **One feature at a time** from `feature_list.json`.
 - **Verification required** before "done" — run `./init.sh`; record evidence in the feature entry.
 - **Stay in scope**; update `progress.md` + `feature_list.json` before ending a session.
 - **Leave a clean restart**: the next session must run `./init.sh` immediately.
@@ -63,9 +64,10 @@ fyj_scanner repo (the job index, READ-ONLY to us)      THIS repo (fyj ops-consol
 - [ ] Evidence recorded in `feature_list.json` / `progress.md`.
 - [ ] Repo restartable from `./init.sh`.
 
-> **Runtime caveat:** there is no provisioned Neon/Cloudflare yet, so end-to-end behavior is NOT
-> testable in-repo. Type-checks + `next build` are the standing gates. Real f-133 verification is
-> the **RLS smoke test in `docs/INFRA-SETUP.md`**, runnable only after `f-infra`. Don't claim
+> **Runtime caveat:** infra IS provisioned and live (see `docs/INFRA-SETUP.md`), but the repo
+> ships without `.dev.vars`, so the Worker can't run locally until you copy
+> `.dev.vars.example` and fill it. Type-checks + `next build` are the standing in-repo gates;
+> live verification means the deployed Worker (or `.dev.vars` + `npm run dev`). Don't claim
 > runtime correctness you can't show.
 
 ## Where to look when something breaks

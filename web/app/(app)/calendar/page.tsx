@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Chip } from "@/components/ui/chip";
+import { CompanyLogo } from "@/components/primitives";
 import { api } from "@/lib/api";
 import type { CalendarEvent, CalendarKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -92,18 +93,18 @@ export default function CalendarPage() {
           </div>
           <button
             onClick={() => setCursor({ year: today.getFullYear(), month: today.getMonth() })}
-            className="border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="rounded-lg border border-border px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             Today
           </button>
         </div>
-        <div className="flex items-center gap-1 border border-border p-1">
+        <div className="flex items-center gap-1 rounded-lg border border-border p-1">
           {(["month", "agenda"] as const).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
               className={cn(
-                "px-3 py-1 text-sm font-medium capitalize transition-colors",
+                "rounded-md px-3 py-1 text-sm font-medium capitalize transition-colors",
                 view === v
                   ? "bg-accent text-accent-foreground"
                   : "text-muted-foreground hover:text-foreground",
@@ -123,7 +124,7 @@ export default function CalendarPage() {
 
       {view === "month" ? (
         <>
-          <div className="grid grid-cols-7 border-l border-t border-border">
+          <div className="grid grid-cols-7 overflow-hidden rounded-xl border-l border-t border-border">
             {WEEKDAYS.map((w) => (
               <div
                 key={w}
@@ -146,7 +147,7 @@ export default function CalendarPage() {
                   <>
                     <div
                       className={cn(
-                        "mb-1 inline-flex h-5 min-w-5 items-center justify-center px-1 text-xs tabular-nums",
+                        "mb-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-xs tabular-nums",
                         isToday(day) ? "bg-primary font-semibold text-primary-foreground" : "text-muted-foreground",
                       )}
                     >
@@ -169,7 +170,7 @@ export default function CalendarPage() {
           </div>
 
           {selectedDay != null && (
-            <div className="mt-4 border border-border bg-card p-4">
+            <div className="mt-4 rounded-xl border border-border bg-card p-4">
               <h3 className="mb-2 text-sm font-medium">
                 {monthName} {selectedDay}, {cursor.year}
               </h3>
@@ -189,12 +190,12 @@ export default function CalendarPage() {
         <div className="flex flex-col gap-2">
           {events === null && <p className="text-sm text-muted-foreground">Loading…</p>}
           {events?.length === 0 && (
-            <div className="border border-border bg-card px-6 py-16 text-center text-sm text-muted-foreground">
+            <div className="rounded-xl border border-border bg-card px-6 py-16 text-center text-sm text-muted-foreground">
               No scheduled events this month.
             </div>
           )}
           {agenda.map((e) => (
-            <div key={e.id} className="flex items-center gap-3 border border-border bg-card p-3">
+            <div key={e.id} className="flex items-center gap-3 rounded-xl border border-border bg-card p-3">
               <span className="w-16 shrink-0 text-xs text-muted-foreground tabular-nums">
                 {e.date.slice(5)}
               </span>
@@ -210,7 +211,8 @@ export default function CalendarPage() {
 function EventRow({ e }: { e: CalendarEvent }) {
   return (
     <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
-      <div className="min-w-0">
+      <div className="flex min-w-0 items-center gap-2.5">
+        {e.companyName && <CompanyLogo company={e.companyName} size={22} />}
         <div className="truncate text-sm font-medium">
           {e.clientName}
           {e.jobTitle ? <span className="text-muted-foreground"> · {e.jobTitle}</span> : null}

@@ -59,30 +59,48 @@ export default function DashboardPage() {
     };
   }, []);
 
+  // % change: second half of the 30-day window vs the first half. Null when
+  // there's no prior-period signal — the KpiCard then hides the delta chip.
+  const deltaOf = (series: number[]): number | null => {
+    if (series.length < 8) return null;
+    const half = Math.floor(series.length / 2);
+    const prev = series.slice(0, half).reduce((a, b) => a + b, 0);
+    const cur = series.slice(half).reduce((a, b) => a + b, 0);
+    if (prev === 0) return null;
+    return Math.round(((cur - prev) / prev) * 100);
+  };
+  const placementsSeries = trends.map((t) => t.placements);
+  const responsesSeries = trends.map((t) => t.responses);
+  const applicationsSeries = trends.map((t) => t.applications);
+
   const kpiCards = [
     {
       label: "Placements",
       sub: "month to date",
       value: kpis?.placementsMtd ?? 0,
-      spark: trends.map((t) => t.placements),
+      spark: placementsSeries,
+      delta: deltaOf(placementsSeries),
     },
     {
       label: "Response rate",
       sub: "30-day rolling",
       value: `${kpis?.responseRate ?? 0}%`,
-      spark: trends.map((t) => t.responses),
+      spark: responsesSeries,
+      delta: deltaOf(responsesSeries),
     },
     {
       label: "Live applications",
       sub: "in flight now",
       value: kpis?.liveApplications ?? 0,
-      spark: trends.map((t) => t.applications),
+      spark: applicationsSeries,
+      delta: deltaOf(applicationsSeries),
     },
     {
       label: "Awaiting review",
       sub: "matches queued",
       value: kpis?.awaitingReview ?? 0,
       spark: [] as number[],
+      delta: null,
     },
   ];
 

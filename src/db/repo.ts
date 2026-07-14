@@ -7,6 +7,7 @@ import {
   campaignMatches,
   placements,
   reports,
+  resumeDocuments,
   memberships,
   feedback,
   auditLog,
@@ -16,6 +17,7 @@ import {
   matchConfidence,
   feedbackSignal,
   memberRole,
+  placementStatus,
 } from "./schema";
 import { user } from "./auth-schema";
 
@@ -36,6 +38,7 @@ export type ClientStatus = (typeof clientStatus.enumValues)[number];
 export type ConsentStatus = (typeof consentStatus.enumValues)[number];
 export type FeedbackSignal = (typeof feedbackSignal.enumValues)[number];
 export type MemberRole = (typeof memberRole.enumValues)[number];
+export type PlacementStatus = (typeof placementStatus.enumValues)[number];
 
 export interface NewClientInput {
   fullName: string;
@@ -555,6 +558,86 @@ export function listApplications(
   });
 }
 
+// ── placement writes (f-155) ────────────────────────────────────────────
+// The pipeline is presented as tables/lists (per the design — no kanban);
+// these are the stage/notes mutations behind those lists. Stage changes stamp
+// stage_changed_at (time-in-stage) and the first move to "applied" stamps
+// applied_at without ever un-setting it on later transitions.
+
+export interface UpdatePlacementInput {
+  status?: PlacementStatus;
+  notes?: string | null;
+  followUps?: unknown[];
+}
+
+export function updatePlacement(
+  db: DB,
+  who: Principal,
+  placementId: string,
+  input: UpdatePlacementInput,
+) {
+  return withTenant(db, who, async (tx) => {
+    const now = new Date();
+    const [row] = await tx
+      .update(placements)
+      .set({
+        ...(input.status !== undefined
+          ? {
+              status: input.status,
+              stageChangedAt: now,
+              ...(input.status === "applied"
+                ? { appliedAt: sql`coalesce(${placements.appliedAt}, now())` }
+                : {}),
+            }
+          : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        ...(input.followUps !== undefined ? { followUps: input.followUps } : {}),
+        updatedAt: now,
+      })
+      .where(eq(placements.id, placementId))
+      .returning();
+    if (row) await audit(tx, who, "placement.update", "placement", row.id, { ...input });
+    return row ?? null;
+  });
+}
+
+export interface CreatePlacementInput {
+  clientId: string;
+  jobTitle: string;
+  companyName: string;
+  jobId?: string | null;
+  companyId?: string | null;
+  status?: PlacementStatus;
+  notes?: string | null;
+}
+
+export function createPlacement(db: DB, who: Principal, input: CreatePlacementInput) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .insert(placements)
+      .values({
+        orgId: who.orgId,
+        clientId: input.clientId,
+        jobId: input.jobId ?? null,
+        companyId: input.companyId ?? null,
+        jobTitle: input.jobTitle,
+        companyName: input.companyName,
+        status: input.status ?? "lead",
+        stageChangedAt: new Date(),
+        notes: input.notes ?? null,
+        createdBy: who.userId,
+      })
+      .returning();
+    if (row)
+      await audit(tx, who, "placement.create", "placement", row.id, {
+        clientId: input.clientId,
+        jobTitle: input.jobTitle,
+        companyName: input.companyName,
+      });
+    return row ?? null;
+  });
+}
+
 // ── match review / Explore (f-139 P2) ──────────────────────────────────
 // Cross-campaign match list for the Explore view. RLS-scoped: an operator only
 // sees matches for their assigned clients (via the campaign_matches policy),
@@ -633,6 +716,36 @@ export function listMatches(
       return true;
     });
     return deduped.map((r) => ({ ...r, surfacedAt: new Date(r.surfacedAt).toISOString() }));
+  });
+}
+
+/** One match by id (same shape as listMatches) — the tailor workspace header. */
+export function getMatch(db: DB, who: Principal, matchId: string): Promise<MatchRow | null> {
+  return withTenant(db, who, async (tx) => {
+    const [r] = await tx
+      .select({
+        id: campaignMatches.id,
+        clientId: campaignMatches.clientId,
+        clientName: clients.fullName,
+        campaignId: campaignMatches.campaignId,
+        jobId: campaignMatches.jobId,
+        companyId: campaignMatches.companyId,
+        score: campaignMatches.score,
+        rank: campaignMatches.rank,
+        fitScore: campaignMatches.fitScore,
+        confidence: campaignMatches.confidence,
+        rationale: campaignMatches.rationale,
+        matchedSkills: campaignMatches.matchedSkills,
+        missingSkills: campaignMatches.missingSkills,
+        guardrails: campaignMatches.guardrails,
+        action: campaignMatches.action,
+        surfacedAt: campaignMatches.surfacedAt,
+      })
+      .from(campaignMatches)
+      .innerJoin(clients, eq(clients.id, campaignMatches.clientId))
+      .where(eq(campaignMatches.id, matchId))
+      .limit(1);
+    return r ? { ...r, surfacedAt: new Date(r.surfacedAt).toISOString() } : null;
   });
 }
 
@@ -974,6 +1087,143 @@ export function updateTailoredResume(db: DB, who: Principal, matchId: string, ma
       .where(eq(reports.campaignMatchId, matchId))
       .returning({ id: reports.id });
     return row ?? null;
+  });
+}
+
+// ── resume documents (Write library + tailor workspace, f-156) ─────────
+// body_json is an opaque editor document ({meta, blocks, versions}) owned by
+// the web block editor — the Worker stores/returns it without interpreting it.
+// version bumps on every body write so concurrent tabs can detect staleness.
+
+export interface ResumeDocumentListRow {
+  id: string;
+  clientId: string | null;
+  clientName: string | null;
+  sourceMatchId: string | null;
+  title: string;
+  version: number;
+  updatedAt: Date;
+  createdAt: Date;
+}
+
+export interface ListResumeDocumentsFilters {
+  clientId?: string | null;
+  sourceMatchId?: string | null;
+}
+
+export function listResumeDocuments(
+  db: DB,
+  who: Principal,
+  filters: ListResumeDocumentsFilters = {},
+): Promise<ResumeDocumentListRow[]> {
+  return withTenant(db, who, async (tx) => {
+    const conds = [];
+    if (filters.clientId) conds.push(eq(resumeDocuments.clientId, filters.clientId));
+    if (filters.sourceMatchId) conds.push(eq(resumeDocuments.sourceMatchId, filters.sourceMatchId));
+    return tx
+      .select({
+        id: resumeDocuments.id,
+        clientId: resumeDocuments.clientId,
+        clientName: clients.fullName,
+        sourceMatchId: resumeDocuments.sourceMatchId,
+        title: resumeDocuments.title,
+        version: resumeDocuments.version,
+        updatedAt: resumeDocuments.updatedAt,
+        createdAt: resumeDocuments.createdAt,
+      })
+      .from(resumeDocuments)
+      .leftJoin(clients, eq(clients.id, resumeDocuments.clientId))
+      .where(conds.length ? and(...conds) : undefined)
+      .orderBy(desc(resumeDocuments.updatedAt));
+  });
+}
+
+export function getResumeDocument(db: DB, who: Principal, docId: string) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(resumeDocuments)
+      .where(eq(resumeDocuments.id, docId))
+      .limit(1);
+    return row ?? null;
+  });
+}
+
+export interface CreateResumeDocumentInput {
+  title: string;
+  clientId?: string | null;
+  sourceMatchId?: string | null;
+  bodyJson?: Record<string, unknown>;
+}
+
+export function createResumeDocument(db: DB, who: Principal, input: CreateResumeDocumentInput) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .insert(resumeDocuments)
+      .values({
+        orgId: who.orgId,
+        clientId: input.clientId ?? null,
+        sourceMatchId: input.sourceMatchId ?? null,
+        title: input.title,
+        bodyJson: input.bodyJson ?? {},
+        createdBy: who.userId,
+      })
+      .returning();
+    if (row)
+      await audit(tx, who, "resume_document.create", "resume_document", row.id, {
+        title: input.title,
+        clientId: input.clientId ?? null,
+        sourceMatchId: input.sourceMatchId ?? null,
+      });
+    return row ?? null;
+  });
+}
+
+export interface UpdateResumeDocumentInput {
+  title?: string;
+  clientId?: string | null;
+  bodyJson?: Record<string, unknown>;
+}
+
+export function updateResumeDocument(
+  db: DB,
+  who: Principal,
+  docId: string,
+  input: UpdateResumeDocumentInput,
+) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .update(resumeDocuments)
+      .set({
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.clientId !== undefined ? { clientId: input.clientId } : {}),
+        ...(input.bodyJson !== undefined
+          ? { bodyJson: input.bodyJson, version: sql`${resumeDocuments.version} + 1` }
+          : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(resumeDocuments.id, docId))
+      .returning();
+    if (row)
+      await audit(tx, who, "resume_document.update", "resume_document", row.id, {
+        title: input.title,
+        bodyChanged: input.bodyJson !== undefined,
+      });
+    return row ?? null;
+  });
+}
+
+export function deleteResumeDocument(db: DB, who: Principal, docId: string): Promise<boolean> {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .delete(resumeDocuments)
+      .where(eq(resumeDocuments.id, docId))
+      .returning({ id: resumeDocuments.id, title: resumeDocuments.title });
+    if (row)
+      await audit(tx, who, "resume_document.delete", "resume_document", row.id, {
+        title: row.title,
+      });
+    return Boolean(row);
   });
 }
 

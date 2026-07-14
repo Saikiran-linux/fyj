@@ -4,6 +4,148 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-07-14 (later) — P3: Write library + standalone tailor workspace (f-156); prod Worker verified live
+
+**Live verification first (user request).** The user had deployed the Worker; verified the deploy
+end-to-end with the operator login (`vamshik`): sign-in via `POST /api/auth/sign-in/username` →
+`/api/me` resolves `staff/operator`; `/api/clients` returns the real book; `/api/applications` 6
+rows; dashboard KPIs + 50-match review queue live; and the **f-155 placement stage-write was
+driven for real** — `PATCH /api/placements/ad0f231e…` `ready_to_send → interview → ready_to_send`
+(fresh `stageChangedAt` stamps each way; invalid status → 400; bogus id → 404). That closes the
+"drive a live stage change after deploy" item from the previous session. Environment notes: curl
+on this box needs `--ssl-no-revoke` (Norton TLS intercept breaks schannel revocation checks), and
+`interviewing` is not a stage — the enum value is `interview`.
+
+**f-156 backend.** New `resume_documents` table (`src/db/schema.ts` →
+`drizzle/0005_luxuriant_starhawk.sql`): org_id, **nullable client_id** (org-wide drafts),
+`source_match_id` → campaign_matches (links a workspace doc to its match; extension beyond the
+planned column list, needed for find-doc-by-match), title, `body_json` (opaque editor doc:
+{meta, blocks, versions}), version (bumps on every body write), r2_pdf_key (null for now —
+export is client-side print-to-PDF like the drawer). RLS in `db/policies.sql`: staff-only, the
+usual `can_access_client` gate with an `or client_id is null` escape for org-wide drafts; never
+portal-visible. Repo CRUD is audited; `repo.getMatch` added (single hydrated match). Routes:
+`GET/POST /api/resumes`, `GET/PATCH/DELETE /api/resumes/:id`, `GET /api/matches/:id`, and
+**`POST /api/resumes/ai`** — Haiku line transforms (improve/grammar/shorter/longer/simplify/
+continue/custom) with a system prompt that hard-bans invented employers/dates/metrics; takes
+optional {jobTitle, company, missingSkills} context from the workspace. Pure LLM call, no DB.
+
+**f-156 frontend.** `web/lib/resume-doc.ts` — the block model + **markdown round-trip in the
+exact dialect `lib/resume-render.ts` renders** (`# Name`, contact para, `## SECTION`,
+`### Role | Company<TAB>Date`, bullets; skills-list paragraphs under a Skills section parse back
+into a chips block), plus coverage calc, LCS word-diff, docAddSkill. `components/resume-editor.tsx`
+— the PlateKit port: contentEditable rows seeded on id/epoch (caret survives typing), hover
+gutter (add/drag-reorder), Enter/Backspace block management, "/" slash menu, floating
+bold/italic/underline/code/link toolbar, skills chips, inline-editable job rows, word-diff view,
+and **real AI chips** calling /api/resumes/ai with accept/retry/discard (prototype's canned
+rewrites replaced). `/write` — library grid (blank / from-candidate seeded from
+parsedProfile.candidate / duplicate / delete) + editor with 800ms-debounced autosave, preview
+iframe, Download PDF. `/tailor/[matchId]` — full workspace: loads the REAL tailored markdown
+(polls while the queue tailors; kicks if missing, same contract as the drawer), rail with JD
+coverage ring + per-requirement add buttons + rationale + guardrails, diff vs the as-loaded
+generated version, **Save = saveTailoredResume** (the store the drawer/documents/send flow read),
+**Save version → snapshots into the linked resume_documents row** (survives reloads, shows in
+/write), Regenerate (re-enqueue + poll). Drawer gained an "Open workspace ↗" link.
+
+**Deliberate deviations from the prototype** (why): no ghost-text autocomplete (canned fake), no
+margin comments (no persistence model until messaging f-158), no AI dock chat (inline only), no
+synthetic variants (production has ONE real tailored output + Regenerate; fake variants would
+lie), meta is name+contact only (that's what the markdown/PDF engine renders).
+
+**Gates.** `./init.sh` green (worker tsc; db:generate no-drift after 0005; web tsc) + web
+`next build` green — 21 routes incl. `/tailor/[matchId]` (4.97 kB) and the real `/write` (3.45 kB).
+
+**Closed out later the same session — user supplied the Neon owner URL + authorized deploy.**
+- **Migration applied live** via `@neondatabase/serverless` WebSocket Client (raw 5432 blocked in
+  this sandbox, same as f-152): drizzle `0005_luxuriant_starhawk` created `resume_documents`;
+  `db/policies.sql` re-applied. Verified: RLS on, both policies present, `ops_app` has
+  select/insert and stays non-BYPASSRLS.
+- **Journal reconciled:** live Neon had NO `drizzle.__drizzle_migrations` at all (drizzle-kit
+  migrate was never run there — every prior migration was applied manually). Created it and
+  seeded all 6 entries (hash = sha256 of each file, created_at = journal `when`), so a future
+  `npm run db:migrate` is a clean no-op instead of re-running 0000..0005 — 0004 re-running would
+  have re-NULLed `client_profiles.embedding`.
+- **Worker deployed** — version `e759e0a9-e302-42ec-b8b8-612f9177e491`.
+- **Live-verified as `vamshik`:** `/api/resumes` full CRUD cycle (create → PATCH bumps version
+  1→2 + persists `versions[]` → GET → DELETE → list `[]`); `POST /api/resumes/ai` returned a real
+  Haiku rewrite ("worked on backend services…" → "Engineered backend services supporting product
+  data pipelines…"); `GET /api/matches/:id` hydrates (Data Engineer @ tavus, fit 85, 7 matched
+  skills). First request after deploy 404'd once (version propagation), fine seconds later.
+- Earlier in the session, the prod placement stage-write was also driven live
+  (`ready_to_send → interview → back`, fresh `stageChangedAt` both ways) — f-155's open item.
+
+**Still open:**
+1. **Rotate the Neon owner password** — pasted in chat this session (third occurrence of the
+   pattern; docs/INFRA-SETUP.md standing rule).
+2. ~~Vestigial `ops_system` role~~ — DROPPED later this session on explicit user authorization.
+   Note the Neon quirk: `neondb_owner` isn't superuser, so `DROP OWNED BY ops_system` needs
+   `grant ops_system to neondb_owner;` first (42501 otherwise). Verified after: role gone,
+   `ops_app` grants intact + non-BYPASSRLS, live `/api/clients` still serves. P0's manual-cleanup
+   item is fully closed.
+3. Vercel ships /write + /tailor on merge to main (PR #35 first, then this branch's PR). UI-level
+   smoke after merge: create/edit a doc in /write; open a match workspace → Save → drawer shows
+   the edit; AI chip accept path.
+
+---
+
+## 2026-07-14 — Console redesign kickoff: hygiene (P0) + prototype design system (f-154, P1)
+
+Start of the console-redesign workstream (plan: fyj_scanner plan doc; tracker: f-154…f-160,
+seeded this session — portal/onboarding/billing remain f-137/f-145/f-138). Branch
+`claude/console-redesign`, stacked on `claude/tailor-lab-gpt-models` (PR #35, **open — merge
+it first**, then this branch's PR rebases clean).
+
+**P0 hygiene (commit `e0c92ef`).** Retired the vestigial `ops_system` BYPASSRLS role:
+`db/policies.sql` no longer creates it and all grants dropped `, ops_system` (fresh-DB safe;
+manual cleanup documented in the file). Corrected the stale matcher/BYPASSRLS claims in
+`README.md` + `CLAUDE.md` (matcher runs as `ops_app` through the SECURITY DEFINER `app.*`
+fns), refreshed the ancient "P1 foundation" README status + CLAUDE.md runtime caveat,
+fixed `src/api.ts` resume-attach fallback `embeddingModel` (`text-embedding-3-small` →
+`voyage-4-large`, metadata-only), and seeded f-154…f-160 into `feature_list.json`.
+
+**P1 design system (f-154).** `web/app/globals.css` remapped to the prototype's palette —
+cool hue-275 neutrals (paper `oklch(0.977 0.002 270)`, ink `0.25/275`), muted-indigo
+`--primary oklch(0.54 0.155 277)`, semantic ok/info/warn/bad, prototype dark block — with
+the 8px radius scale restored (**removed `border-radius: 0 !important`**); `--accent` is a
+`color-mix` wash off `--primary` so the runtime accent propagates. Fonts: Source Sans 3 →
+**Geist + Geist Mono** (`next/font`), `--font-heading` var + `.label` mono-uppercase utility.
+Navbar reworked to the prototype's icon-forward style (tooltips, active underline, badge
+slots left un-faked) with new destinations **Activity / Inbox / Chat / Write** (Placeholder
+pages pointing at f-157/f-158/f-156) + Candidate portal (`/portal`, public teaser page) +
+**Preferences** dialog (dark / accent / density / heading font → `lib/prefs.ts`,
+localStorage `fyj_prefs_v1`, pre-paint boot script in `app/layout.tsx` — keep the two in
+sync). Ported primitives: `components/primitives.tsx` (FitScore, CompanyLogo marks,
+DotColumns/DotTrack/DotBlock, braille loaders).
+
+**Gates.** Worker `tsc` clean; web `tsc` clean; web `next build` green (20 routes incl. the
+5 new). Live-verified on `next dev` + browser: body font = Geist, `--radius` 8px with real
+10px card corners, `--primary`/`--background` = prototype values. NOT yet verified: the
+pre-paint prefs boot in a real browser (permission-classifier outage mid-session) — flip
+`fyj_prefs_v1` and reload to confirm no-flash dark/accent.
+
+**Open for the user:** merge PR #35, then the redesign PR; `npm run deploy` (wrangler is
+authed) so prod picks up the api.ts/policies hygiene — policies.sql re-apply is optional
+(the retired-role edit is inert on an existing DB). NOTE: local `npm run deploy` hit the
+Norton TLS intercept — set `NODE_EXTRA_CA_CERTS=$HOME\.career-ops\norton-root.pem` first
+(same fix as fyj_scanner; consider persisting it as a user env var).
+
+**P2 — surface richness + placement writes (f-155, same session).** Backend:
+`repo.updatePlacement`/`createPlacement` + `PATCH/POST /api/placements` (staff non-viewer,
+enum-validated, audited; stage change stamps `stage_changed_at`, first move to `applied`
+coalesce-stamps `applied_at`) — no schema change (`db:generate` clean; the pipeline stages
+and denormalized job cols already existed from f-139 P3). Web: Dashboard delta chips +
+DotColumns throughput + accent funnel + **real Role/Company columns** (the "—" placeholders
+were stale — placements carry job_title/company_name); Review: FitScore bars, CompanyLogo,
+candidate filter, rounded chrome; **Explore rebuilt** — browse-mode discovery rails
+(Fresh / Remote-first / Top-comp from one `recentJobs(60)` call; the web `JobHit` mirror was
+dropping the workplace/comp/source/postedAt fields the Worker already returns — extended) +
+search grid + slide-over drawer with the real posting description; Candidates roster search +
+per-candidate new-matches/live-apps metrics; Profile applications tab **stage is now an
+inline Select** → `PATCH /api/placements/:id`; Calendar rounded + CompanyLogo rows. Gates
+green (worker tsc / web tsc / next build, 20 routes). Deliberate deviation: roster stays a
+grid → detail navigation (adding search + metrics) rather than the prototype's collapsible
+master/detail sidebar — the existing IA, far less churn. NOT runtime-verified end-to-end
+(no `.dev.vars`); drive a live stage change after deploy.
+
 ## 2026-07-02 — Résumé Tailoring Lab (prompt/model A/B harness, f-153)
 
 Built a staff-only experimentation page to A/B tailoring **prompts** and **model

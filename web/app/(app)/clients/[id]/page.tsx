@@ -44,6 +44,7 @@ import type {
   Feedback,
   FeedbackSignal,
   CandidateDocuments,
+  PlacementStatus,
 } from "@/lib/types";
 
 function consentTone(consent: ConsentStatus) {
@@ -56,6 +57,61 @@ function fitTone(score: number | null) {
 function fmtDate(iso: string) {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString();
+}
+
+// The pipeline stages in workflow order (placements.status). Presented as a
+// list-inline select per the design — no kanban.
+const STAGES: PlacementStatus[] = [
+  "lead",
+  "drafted",
+  "ready_to_send",
+  "applied",
+  "responded",
+  "screening",
+  "interview",
+  "offer",
+  "placed",
+  "rejected",
+  "withdrawn",
+];
+
+/** Inline stage editor for one application row (f-155: PATCH /api/placements). */
+function StageSelect({
+  app,
+  onChanged,
+}: {
+  app: ApplicationRow;
+  onChanged: (next: ApplicationRow) => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  return (
+    <Select
+      value={app.status}
+      disabled={saving}
+      onValueChange={(v) => {
+        if (v === app.status) return;
+        setSaving(true);
+        api
+          .updatePlacement(app.id, { status: v as PlacementStatus })
+          .then((row) => onChanged({ ...app, status: row.status, updatedAt: row.updatedAt }))
+          .catch(() => {})
+          .finally(() => setSaving(false));
+      }}
+    >
+      <SelectTrigger size="sm" className="h-7 w-40 text-xs">
+        <SelectValue>
+          <Chip tone={statusTone(app.status)}>{app.status.replace(/_/g, " ")}</Chip>
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        {STAGES.map((s) => (
+          <SelectItem key={s} value={s}>
+            {s.replace(/_/g, " ")}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
 }
 
 export default function CandidateProfilePage() {
@@ -387,7 +443,8 @@ export default function CandidateProfilePage() {
             />
           </TabsContent>
 
-          {/* Applications */}
+          {/* Applications — stage is editable in place (f-155 placement writes).
+              The pipeline stays a list per the design; no kanban. */}
           <TabsContent value="applications" className="pt-4">
             <Card className="px-0 py-0">
               <Table>
@@ -412,7 +469,14 @@ export default function CandidateProfilePage() {
                       <TableCell>{a.jobTitle ?? "—"}</TableCell>
                       <TableCell className="text-muted-foreground">{a.companyName ?? "—"}</TableCell>
                       <TableCell>
-                        <Chip tone={statusTone(a.status)}>{a.status.replace(/_/g, " ")}</Chip>
+                        <StageSelect
+                          app={a}
+                          onChanged={(next) =>
+                            setApps((cur) =>
+                              cur ? cur.map((x) => (x.id === next.id ? next : x)) : cur,
+                            )
+                          }
+                        />
                       </TableCell>
                       <TableCell className="text-muted-foreground">{fmtDate(a.updatedAt)}</TableCell>
                     </TableRow>
@@ -698,6 +762,15 @@ function TailoredResumeDrawer({ matchId, onClose }: { matchId: string; onClose: 
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {status === "ready" && (
+              <Link
+                href={`/tailor/${matchId}`}
+                className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                title="Full tailoring workspace — block editor, JD coverage, versions"
+              >
+                Open workspace ↗
+              </Link>
+            )}
             {status === "ready" && (
               <div className="flex rounded-md border border-border p-0.5">
                 {(["preview", "edit"] as const).map((v) => (

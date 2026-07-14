@@ -12,6 +12,7 @@ import {
   consentStatus,
   feedbackSignal,
   memberRole,
+  placementStatus,
 } from "./db/schema";
 import * as Sentry from "@sentry/cloudflare";
 import { parseResume } from "./resume";
@@ -21,7 +22,7 @@ import { matchProfile } from "./match";
 import { runIntake } from "./graph/intake";
 import { enrichOne } from "./graph/enrich";
 import { tailorResume } from "./graph/tailor";
-import { hasAnthropic } from "./graph/llm";
+import { hasAnthropic, anthropicText, HAIKU } from "./graph/llm";
 import {
   runTailorLab,
   labDefaults,
@@ -43,6 +44,40 @@ interface UploadedFile {
 
 const isStaff = (p: Principal): p is Extract<Principal, { principal: "staff" }> =>
   p.principal === "staff";
+
+// ── AI line transforms for the block editors (f-156 /api/resumes/ai) ────
+// One line in, one line out, on Haiku (fast + cheap — these run per keystroke-
+// scale interactions, not per document). The system prompt hard-bans invented
+// facts; the per-kind task is appended by the route.
+const AI_EDIT_KINDS = [
+  "improve",
+  "grammar",
+  "shorter",
+  "longer",
+  "simplify",
+  "continue",
+  "custom",
+] as const;
+type AiEditKind = (typeof AI_EDIT_KINDS)[number];
+
+const AI_EDIT_SYSTEM = `You are a résumé line editor inside a staffing operations console.
+You rewrite exactly one line (or short block) of a résumé at the operator's request.
+Hard rules:
+- Return ONLY the rewritten line — no preamble, no surrounding quotes, no code fences, no commentary.
+- Never invent employers, job titles, dates, degrees, certifications, or specific numbers/metrics that are not already present in the line. Strengthening verbs and tightening wording is encouraged; fabricating facts is not.
+- Preserve inline **bold** markdown where it marks skills or technologies.
+- Write in résumé voice: first person implied, no "I", no filler.`;
+
+const AI_EDIT_TASKS: Record<Exclude<AiEditKind, "custom">, string> = {
+  improve: "Rewrite the line with stronger verbs and clearer impact. Keep the same facts.",
+  grammar: "Fix spelling and grammar only. Keep the wording as close to the original as possible.",
+  shorter: "Tighten the line to its essentials — roughly half the length, one sentence at most.",
+  longer:
+    "Expand the line with supporting detail that is already implied by it. Do not add new facts or numbers.",
+  simplify: "Rewrite in plainer language. Remove jargon and buzzwords.",
+  continue:
+    "Continue the line naturally where it leaves off. Return the FULL line (the original text plus your continuation). Do not add new facts or numbers.",
+};
 
 /** Build a human pay string from the index's structured comp fields (f-139). */
 function formatComp(j: {
@@ -570,7 +605,7 @@ export function createApi() {
         summary: intake.embedInput, // JD-style precis — reused by enrichment/tailoring
       },
       embedding: intake.embedding,
-      embeddingModel: intake.embeddingModel ?? "text-embedding-3-small",
+      embeddingModel: intake.embeddingModel ?? "voyage-4-large",
     });
     if (!row) return c.json({ error: "not_found" }, 404);
 
@@ -771,6 +806,27 @@ export function createApi() {
     return c.json(hydrated);
   });
 
+  // One match, hydrated — the standalone tailor workspace header/rail (f-156).
+  app.get("/api/matches/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const m = await repo.getMatch(c.get("db"), p, c.req.param("id"));
+    if (!m) return c.json({ error: "not_found" }, 404);
+    const job = await getJob(c.env, m.jobId, m.companyId).catch(() => null);
+    return c.json({
+      ...m,
+      jobTitle: job?.title ?? null,
+      company: job?.company ?? null,
+      location: job?.location ?? null,
+      url: job?.url ?? null,
+      workplace: job?.workplace ?? null,
+      employmentType: job?.employmentType ?? null,
+      source: job?.source ?? null,
+      postedAt: job?.postedAt ?? null,
+      comp: job ? formatComp(job) : null,
+    });
+  });
+
   // Approve a match → mark it actioned + queue a placement (idempotent).
   app.post("/api/matches/:id/approve", async (c) => {
     const p = c.get("principal");
@@ -838,6 +894,115 @@ export function createApi() {
     if (typeof body.markdown !== "string") return c.json({ error: "markdown required" }, 400);
     const row = await repo.updateTailoredResume(c.get("db"), p, c.req.param("id"), body.markdown);
     return row ? c.json({ ok: true }) : c.json({ error: "not_found" }, 404);
+  });
+
+  // ── resume documents (Write library + tailor workspace, f-156) ───────
+  // body_json is the block-editor document ({meta, blocks, versions}) owned by
+  // the web editor; the Worker treats it as opaque JSON. Staff-only (RLS:
+  // org-wide when client_id is null, operator-book gated when set).
+
+  app.get("/api/resumes", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    return c.json(
+      await repo.listResumeDocuments(c.get("db"), p, {
+        clientId: c.req.query("clientId") ?? null,
+        sourceMatchId: c.req.query("matchId") ?? null,
+      }),
+    );
+  });
+
+  // AI line transform for the block editors (improve / shorter / longer / …).
+  // Registered before /api/resumes/:id so "ai" is never captured as an :id.
+  // Pure LLM call — no tenant data is read or written, so no repo/audit here.
+  app.post("/api/resumes/ai", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    if (!hasAnthropic(c.env)) return c.json({ error: "no_ai" }, 503);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      kind?: string;
+      text?: string;
+      prompt?: string;
+      context?: { jobTitle?: string; company?: string; missingSkills?: string[] };
+    };
+    const kind = body.kind as AiEditKind | undefined;
+    if (!kind || !AI_EDIT_KINDS.includes(kind)) return c.json({ error: "invalid kind" }, 400);
+    const text = (body.text ?? "").toString().slice(0, 4000);
+    if (!text.trim()) return c.json({ error: "text required" }, 400);
+    const prompt = (body.prompt ?? "").toString().slice(0, 500);
+    if (kind === "custom" && !prompt.trim()) return c.json({ error: "prompt required" }, 400);
+
+    const ctxLines: string[] = [];
+    const ctx = body.context;
+    if (ctx?.jobTitle)
+      ctxLines.push(`Target role: ${ctx.jobTitle}${ctx.company ? ` at ${ctx.company}` : ""}.`);
+    if (ctx?.missingSkills?.length)
+      ctxLines.push(
+        `JD skills still missing from the résumé: ${ctx.missingSkills.slice(0, 8).join(", ")}.`,
+      );
+    const task = kind === "custom" ? prompt.trim() : AI_EDIT_TASKS[kind];
+    const user = `${ctxLines.length ? ctxLines.join("\n") + "\n\n" : ""}TASK: ${task}\n\nLINE:\n${text}`;
+    const out = await anthropicText(c.env, {
+      system: AI_EDIT_SYSTEM,
+      user,
+      model: HAIKU,
+      maxTokens: 500,
+      temperature: 0.2,
+    });
+    // Defensive: strip fences/quotes a model might wrap the line in.
+    const cleaned = out
+      .trim()
+      .replace(/^```[a-z]*\n?/i, "")
+      .replace(/\n?```$/, "")
+      .replace(/^"(.*)"$/s, "$1")
+      .trim();
+    return c.json({ text: cleaned });
+  });
+
+  app.post("/api/resumes", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as Partial<repo.CreateResumeDocumentInput>;
+    if (!body.title?.trim()) return c.json({ error: "title required" }, 400);
+    if (body.bodyJson !== undefined && (typeof body.bodyJson !== "object" || body.bodyJson === null))
+      return c.json({ error: "bodyJson must be an object" }, 400);
+    const row = await repo.createResumeDocument(c.get("db"), p, {
+      title: body.title.trim(),
+      clientId: body.clientId ?? null,
+      sourceMatchId: body.sourceMatchId ?? null,
+      bodyJson: body.bodyJson,
+    });
+    return row ? c.json(row, 201) : c.json({ error: "not_found" }, 404);
+  });
+
+  app.get("/api/resumes/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const row = await repo.getResumeDocument(c.get("db"), p, c.req.param("id"));
+    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  app.patch("/api/resumes/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as Partial<repo.UpdateResumeDocumentInput>;
+    if (body.title !== undefined && !body.title?.trim())
+      return c.json({ error: "title cannot be empty" }, 400);
+    if (body.bodyJson !== undefined && (typeof body.bodyJson !== "object" || body.bodyJson === null))
+      return c.json({ error: "bodyJson must be an object" }, 400);
+    const row = await repo.updateResumeDocument(c.get("db"), p, c.req.param("id"), {
+      ...(body.title !== undefined ? { title: body.title.trim() } : {}),
+      ...(body.clientId !== undefined ? { clientId: body.clientId } : {}),
+      ...(body.bodyJson !== undefined ? { bodyJson: body.bodyJson } : {}),
+    });
+    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  app.delete("/api/resumes/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const ok = await repo.deleteResumeDocument(c.get("db"), p, c.req.param("id"));
+    return ok ? c.json({ ok: true, id: c.req.param("id") }) : c.json({ error: "not_found" }, 404);
   });
 
   // ── résumé prompt lab (dev tool) ─────────────────────────────────────
@@ -957,6 +1122,55 @@ export function createApi() {
     const p = c.get("principal");
     if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
     return c.json(await repo.listApplications(c.get("db"), p));
+  });
+
+  // ── placement writes (f-155) — stage/notes/follow-ups from the pipeline
+  // lists (Profile applications tab, dashboard table). No kanban by design.
+  app.patch("/api/placements/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      status?: string;
+      notes?: string | null;
+      followUps?: unknown[];
+    };
+    if (
+      body.status !== undefined &&
+      !placementStatus.enumValues.includes(body.status as repo.PlacementStatus)
+    )
+      return c.json({ error: "invalid status" }, 400);
+    if (body.followUps !== undefined && !Array.isArray(body.followUps))
+      return c.json({ error: "followUps must be an array" }, 400);
+    const row = await repo.updatePlacement(c.get("db"), p, c.req.param("id"), {
+      status: body.status as repo.PlacementStatus | undefined,
+      notes: body.notes,
+      followUps: body.followUps,
+    });
+    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  // Manual pipeline entry (a job sourced outside the index — jobId optional).
+  app.post("/api/placements", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as Partial<repo.CreatePlacementInput>;
+    if (!body.clientId || !body.jobTitle?.trim() || !body.companyName?.trim())
+      return c.json({ error: "clientId + jobTitle + companyName required" }, 400);
+    if (
+      body.status !== undefined &&
+      !placementStatus.enumValues.includes(body.status as repo.PlacementStatus)
+    )
+      return c.json({ error: "invalid status" }, 400);
+    const row = await repo.createPlacement(c.get("db"), p, {
+      clientId: body.clientId,
+      jobTitle: body.jobTitle.trim(),
+      companyName: body.companyName.trim(),
+      jobId: body.jobId,
+      companyId: body.companyId,
+      status: body.status,
+      notes: body.notes,
+    });
+    return row ? c.json(row, 201) : c.json({ error: "not_found" }, 404);
   });
 
   // Calendar (f-139 P4): schedule events derived from placements by date.

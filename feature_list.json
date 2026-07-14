@@ -191,7 +191,10 @@
       "id": "f-150",
       "name": "Explore = general NL job search; Review queue; admin-role resolution hardening",
       "description": "(1) The Explore tab was the candidate match-review queue; repurposed it to a GENERAL natural-language job-search surface over the whole index (web/app/(app)/explore/page.tsx -> api.searchJobs -> /api/search). The match-review queue (approve/decline across the book) moved to a new /review route + nav item so nothing is lost. (2) Hardened resolvePrincipal: a multi-membership staff user now defaults to their HIGHEST-privilege role (admin>operator>viewer) with a stable tiebreak, instead of the oldest-org role (which, with unstable created_at ties, could flip admin->operator between requests).",
-      "dependencies": ["f-139", "f-149"],
+      "dependencies": [
+        "f-139",
+        "f-149"
+      ],
       "status": "done",
       "evidence": "Gates green: Worker `tsc --noEmit`, web `tsc --noEmit`, web `next build` (both /explore and /review routes compiled). Worker DEPLOYED (version 9aadc58b-d852-4a38-b7a7-4ba0978f95b5); admin login verified to resolve role=admin via /api/me post-deploy. Web changes (Explore/Review/navbar) ship via Vercel on push/merge. NOTE on the reported admin->operator switch: on live Neon the `admin` account has a SINGLE admin membership, so the server resolves admin consistently (re-verified) — the resolvePrincipal change is latent-bug prevention; the reported symptom looks client/session-side (e.g. a lingering operator session in the same browser) and needs a repro to pin."
     },
@@ -199,7 +202,11 @@
       "id": "f-151",
       "name": "Explore browse-by-default + reranked search; match dedup; delete track",
       "description": "Explore polish + two fixes. (1) Explore now BROWSES the newest postings by default (no query) via a new index RPC recent_jobs(filters) -> /api/jobs/recent; a query runs hybrid+rerank search. Dropped candidate-fit framing (no % match chip / rationale) — it's job discovery, not candidate scoring. (2) /api/search rewired through the SAME hybrid (dense+lexical RRF) + Voyage rerank pipeline as candidate matching (query doubles as lexical-arm + rerank query), then hydrates. (3) repo.listMatches dedups by (clientId, jobId) so two similar tracks don't show the same job multiple times in the candidate matches tab / review queue. (4) Delete-track: repo.deleteProfile + DELETE /api/profiles/:id (RLS client_profiles staff-write + cascade) + a Delete button on the CampaignCard.",
-      "dependencies": ["f-148", "f-149", "f-150"],
+      "dependencies": [
+        "f-148",
+        "f-149",
+        "f-150"
+      ],
       "status": "done",
       "evidence": "Index: recent_jobs RPC applied to Supabase mwcpoaefmggapztkxakp (migration f151_recent_jobs). Worker DEPLOYED (version ce8cb40a-331a-4608-bc38-babdc136c504) + verified live via admin session: /api/jobs/recent returns newest postings (first_seen desc); /api/search returns 25 reranked hits (Senior Data Engineer roles top for a data-eng query); DELETE /api/profiles/<bogus> -> 404 (route live, RLS-safe). Gates: Worker tsc, web tsc, web next build all green. Web (Explore browse/search + delete button) ships via Vercel."
     },
@@ -207,7 +214,9 @@
       "id": "f-152",
       "name": "Embeddings: OpenAI text-embedding-3-small -> Voyage voyage-4-large (1024d)",
       "description": "Swap the embedding model on BOTH sides of the profile<->job cosine match (must stay in lockstep, per src/embeddings.ts's own invariant). fyj_scanner (job index, sibling repo): src/embeddings.mjs now calls Voyage voyage-4-large (input_type=document, output_dimension=1024) instead of OpenAI; supabase/schema.sql migrates jobs.embedding 1536d->1024d (guarded DO block on current column dimension so re-running schema.sql is a no-op after the first apply), nulls existing embedding/embedding_model/embedded_at (hard cutover — old vectors can't cast to the new dimension), drops+recreates the HNSW index. ops-console (this repo): src/embeddings.ts calls Voyage instead of OpenAI, reusing the existing VOYAGE_API_KEY secret (no new secret) — embedRaw (resume intake) uses input_type=document (mirrors jobs.buildJobText's shape, per summarize.ts's existing doctrine), embedText (command-bar NL query) uses input_type=query, Voyage's asymmetric-retrieval pairing. src/db/schema.ts embedding column -> vector(1024); drizzle migration 0004_pale_guardian.sql nulls existing client_profiles.embedding/embedding_model/embedded_at before the ALTER (same hard-cutover reasoning). OPENAI_API_KEY is UNCHANGED and still required for gpt-4o-mini intake extraction (graph/llm.ts) and résumé summarization (summarize.ts) — only the embedding call moved providers.",
-      "dependencies": ["f-149"],
+      "dependencies": [
+        "f-149"
+      ],
       "status": "done",
       "evidence": "Code done in both repos; DB migrations APPLIED LIVE this session; Worker deploy still pending. fyj_scanner: applied directly to Supabase mwcpoaefmggapztkxakp via migration f152_jobs_embedding_voyage_4_large_1024d — jobs.embedding is now vector(1024) (verified via pg_attribute), old embeddings nulled, HNSW index rebuilt. Hit an undocumented blocker: view public.v_jobs_enriched (SELECT j.*, jd.description ... FROM jobs j LEFT JOIN job_descriptions jd) depends on jobs.embedding and isn't in schema.sql at all — captured its live definition via pg_get_viewdef, dropped it, ran the migration, recreated it verbatim, and added drop+recreate to schema.sql so re-running the file stays idempotent. Confirmed search_jobs_hybrid queries public.jobs directly (not the view), so it's unaffected; grants on the recreated view match Supabase's default anon/authenticated/service_role/postgres set. Of 341,349 total job rows only 8,772 had ANY embedding before this change (OpenAI backfill was never finished), so the real blast radius was those 8,772 rows. STILL OPEN: fyj_scanner/.env has no VOYAGE_API_KEY yet, so `npm run embed-backfill` hasn't run — dense/hybrid search currently returns 0 rows (soft-degrades, doesn't error) until it does. Also confirmed (broader than first thought) that job_descriptions the table itself, plus the 4 RPCs from the earlier finding, are ALSO missing from schema.sql — flagged for the schema-drift reconciliation task, already spawned as a separate session. ops-console: applied drizzle/0004_pale_guardian.sql + db/policies.sql directly to live Neon via the owner role (neondb_owner — confirmed via pg_roles that the runtime `ops_app` role, which the user initially supplied, lacks CREATEROLE/ownership and cannot run either file); client_profiles.embedding confirmed vector(1024) live (3 rows, all nulled by the hard cutover). `npm run typecheck` + `npm run db:generate` green (no drift). NOT YET deployed: `wrangler deploy` blocked in this sandbox (wrangler 4.x needs Node >=22; sandbox has 20.15.1, no version manager) — user opted to run `npm run deploy` themselves rather than have a portable Node 22 fetched. SECURITY: user pasted a Neon owner password, a Cloudflare API token, and a Supabase secret key directly in chat this session to unblock this — flagged for rotation, per the standing 'rotate every credential pasted in chat' note in docs/INFRA-SETUP.md. CLOSED OUT (same session, continued): user provided VOYAGE_API_KEY + asked to scope the backfill to summarized jobs only (EMBED_SUMMARIZED_ONLY=1) rather than all 168k active jobs — search_jobs_hybrid's lexical arm ALSO only indexes title+description_summary, so unsummarized jobs have no lexical signal either; scoping to the 5,617 already-summarized jobs keeps dense+lexical coverage consistent rather than partially covering the other ~162k with noisier raw-description embeddings. First backfill run crashed: scripts/backfill-embeddings.mjs's select still referenced jobs.description, which no longer exists on jobs (moved to job_descriptions at some undocumented point) — fixed by fetching job_descriptions separately in chunks of 200 job_id and merging by id (no FK for PostgREST to embed the join). Second run crashed differently: embedTexts() returned `data.embeddings` per the docs summary I'd fetched earlier, but Voyage's ACTUAL response is OpenAI-shaped (`{data:[{embedding,index}],usage}`) — verified by a raw curl-equivalent fetch; fixed in BOTH src/embeddings.mjs (fyj_scanner) and src/embeddings.ts (ops-console, same bug, not yet deployed at the time so caught before it shipped) to read `data.data[].embedding` sorted by index. Third run: 5,617/5,617 embedded, 0 failed, 148s, $0 (within Voyage's free tier). User then asked to update Node system-wide + deploy: uninstalled the pinned `OpenJS.NodeJS.20` winget package, installed `OpenJS.NodeJS.LTS` (24.18.0) via `winget install --source winget` (had to pin the source — msstore hit a TLS cert error under this machine's Norton MITM setup that winget has no override for, unlike Node's NODE_EXTRA_CA_CERTS). `npm run deploy` succeeded — version `e5da98cb-25e3-4481-a5e8-eb20144e90e0`, live at https://fyj-ops-console.saikiran13055.workers.dev, confirmed healthy (GET /api/health -> 401 unauthenticated, not a crash). FULLY LIVE as of this session: Neon client_profiles.embedding vector(1024), Supabase jobs.embedding vector(1024) with 5,617 embedded jobs, ops-console Worker deployed on the new code. STILL OPEN: (1) rotate the Neon owner password, Cloudflare token, and Supabase key pasted in chat this session; (2) optionally run the full (unscoped) backfill later if broader dense-search coverage over unsummarized jobs is wanted; (3) re-verify end-to-end with a live résumé upload once there's a reason to (not done this session — no test candidate action taken)."
     },
@@ -215,9 +224,79 @@
       "id": "f-153",
       "name": "Résumé Tailoring Lab — prompt/model A/B harness (dev tool)",
       "description": "Staff-only experimentation page to compare tailoring prompts + model combinations across a planner -> generator -> verifier -> (revise loop) pipeline. Backend: new src/graph/tailor-lab.ts runs a parameterised, non-graph re-run of the production tailor pipeline where every stage's system prompt AND model id are caller-supplied; defaults ARE the shipped production prompts (WRITER_SYSTEM/CRITIQUE_SYSTEM now exported from tailor.ts) plus a new DEFAULT_PLANNER_SYSTEM. src/graph/llm.ts gains callAnthropic (text+usage), openaiText (text+usage), a LlmUsage token-accounting shape, and runChat() which dispatches by model id (gpt-*/o[1-9]-* -> OpenAI, else Anthropic) so any stage can run on either provider. Two staff-gated routes: GET /api/tools/tailor-lab (models catalogue w/ approx per-1M prices, production defaults, a runnable sample, provider-key presence) and POST /api/tools/tailor-lab (runs synchronously, returns the full trace: every intermediate output + per-call latency + token usage + verifier pass/issues, resilient — a stage throw is recorded, not a 500). No DB access (inputs are pasted), so it works without provisioned tenant data. Frontend: web/app/(app)/tools/tailor-lab/page.tsx — inputs (master/JD/summary + Load sample), three per-stage config cards (model datalist + editable system prompt; planner has an enable toggle), max-iterations select, a run trace (collapsible step cards with tokens/latency/est-cost, verifier pass/fail + issues) and a final résumé preview (rendered iframe via lib/resume-render + Markdown/Copy). Nav link added to the profile menu (Tailor Lab).",
-      "dependencies": ["f-141"],
+      "dependencies": [
+        "f-141"
+      ],
       "status": "done",
       "evidence": "Gates green: `npm run typecheck` (Worker) clean; `npm run db:generate` -> no schema changes (no DB touched); web `npm run typecheck` clean; web `npm run build` succeeds with the new route present (/tools/tailor-lab, 9.89 kB). NOT runtime-verified end-to-end — no provisioned infra; a live run needs the Worker deployed with ANTHROPIC_API_KEY (present per user) and, for GPT stages, OPENAI_API_KEY. Runtime caveat: the POST runs the whole pipeline synchronously in-request (not the queue) so the trace can return at once — max revise iterations is capped at 3 to stay within the request budget. Model price table in tailor-lab.ts (LAB_MODELS) is approximate/display-only and easy to edit."
+    },
+    {
+      "id": "f-154",
+      "name": "Console redesign P1 — prototype design system (tokens, Geist, icon navbar, prefs, primitives)",
+      "description": "Adopt the operator-dashboard prototype's design system (source: Desktop/dashboard_new 'Dashboard UI staffing/dashboard', a static React/Babel mock) onto web/: map its oklch palette + 8px radius scale into globals.css shadcn tokens (removing the global 'border-radius: 0 !important' square-corners override), swap Source Sans 3 -> Geist + Geist Mono via next/font, rework the top navbar to the prototype's icon-forward style with hover tooltips + badge slots and add the new destinations Activity / Inbox / Chat / Write (placeholder pages until f-156/f-157/f-158), add Candidate-portal + Preferences items to the profile menu, introduce user preferences (dark mode / accent / density / heading font) persisted in localStorage and applied pre-paint, and port the prototype's presentational primitives (FitScore, CompanyLogo marks, DotColumns/DotTrack/DotBlock charts, braille loaders) as typed components.",
+      "dependencies": [
+        "f-150"
+      ],
+      "status": "done",
+      "evidence": "Commit c740efe on claude/console-redesign (PR #36). Gates green: worker tsc, web tsc, web next build (20 routes incl. the 5 new). Live-verified on next dev + browser computed styles: body font Geist, --radius 8px (10px card corners — square-corners !important override gone), --primary/--background = prototype oklch values; pre-paint prefs boot confirmed (dark + #e8623d accent + Geist Mono headings + compact density all applied at paint, no flash; localStorage fyj_prefs_v1)."
+    },
+    {
+      "id": "f-155",
+      "name": "Console redesign P2 — surface richness at prototype parity + placement stage writes",
+      "description": "Bring the existing surfaces to the prototype's interaction depth on live data: Dashboard (KPI sparklines + deltas, throughput series toggle, funnel, leaderboard, live-apps table), Candidates (collapsible roster + per-candidate metrics), Profile (prototype tabs, campaign cards + autopilot toggle via existing PATCH /api/profiles/:id), Explore (discovery rails from recent_jobs, MatchCard grid, detail drawer on real get_job description, filters/sort), Review (inbox-style match queue rendering the campaign_matches fit/confidence/rationale/skills/guardrails columns the matcher already populates — no new report backend), Calendar restyle. Backend: PATCH /api/placements/:id (status/notes/follow_ups) + POST /api/placements so application stages are mutable from the lists — stages stay tables/lists per the demo, NO kanban board.",
+      "dependencies": [
+        "f-154"
+      ],
+      "status": "done",
+      "evidence": "Committed on claude/console-redesign (PR #36). Backend: repo.updatePlacement (stage change stamps stage_changed_at; first move to applied coalesce-stamps applied_at) + repo.createPlacement + PATCH/POST /api/placements routes (staff non-viewer, enum-validated, audited) — reuses the existing placements columns, db:generate confirms no schema drift. Web: api.updatePlacement/createPlacement + PlacementStatus type; Dashboard KPI delta chips (trend halves) + DotColumns throughput + accent funnel + real Role/Company columns (denormalized placements cols replaced the — placeholders); Review gets FitScore bars, CompanyLogo, candidate filter (listMatches candidateId) and rounded chrome; Explore rebuilt with browse-mode discovery rails (Fresh/Remote-first/Top-comp sliced from one recentJobs(60) call — web JobHit mirror extended with the enrichment fields the Worker already returned) + search grid + a slide-over drawer showing the real posting description; Candidates roster gains search + per-candidate new-matches/live-apps metrics (grouped from org-wide listMatches/listApplications); Profile applications tab stage is now an inline Select wired to PATCH /api/placements/:id; Calendar restyled (rounded grid, CompanyLogo agenda rows). Gates green: worker tsc, web tsc, next build. NOT runtime-verified end-to-end (no .dev.vars locally; needs a deployed Worker + operator login to drive a live stage change)."
+    },
+    {
+      "id": "f-156",
+      "name": "Write — org resume library + standalone tailor workspace",
+      "description": "New resume_documents table (org_id, client_id nullable, title, body_json, version, r2_pdf_key) + RLS in the same migration; /api/resumes CRUD + /api/resumes/ai LLM line-transform (improve/shorter/longer/continue via the tailor LLM plumbing). Frontend: /write library (create/open/duplicate/delete + block editor with slash menu, AI chips, drag reorder — ported from prototype dash-write.jsx + PlateKit) and /tailor/[matchId] full-screen workspace (variants, JD coverage ring, base->tailored diff, AI side panel, version history) wired to the existing getTailoredResume/saveTailoredResume endpoints + lib/resume-render.ts for PDF export.",
+      "dependencies": [
+        "f-141",
+        "f-154"
+      ],
+      "status": "done",
+      "evidence": "2026-07-14: Backend — resume_documents table (schema.ts + drizzle/0005_luxuriant_starhawk.sql, + source_match_id link col), RLS in db/policies.sql (staff-only; org-wide when client_id null, can_access_client when set), repo CRUD (list/get/create/update/delete, version bump on body write, audited), routes GET/POST /api/resumes + GET/PATCH/DELETE /api/resumes/:id + POST /api/resumes/ai (Haiku line transforms, fact-invention banned in system prompt) + GET /api/matches/:id (hydrated, for the workspace). Frontend — lib/resume-doc.ts (block model, markdown round-trip to the resume-render dialect, coverage, LCS diff), components/resume-editor.tsx (PlateKit port: slash menu, floating toolbar, drag reorder, skills chips, job rows, REAL AI chips w/ accept/retry), /write library+editor (autosave, preview, PDF), /tailor/[matchId] workspace (coverage ring, JD req add, diff vs generated, versions persisted to the linked resume_documents row, regenerate), drawer 'Open workspace' link. Gates: worker tsc + db:generate no-drift + web tsc + next build (21 routes) all green. LIVE 2026-07-14 (later same session, user supplied the Neon owner URL + authorized deploy): drizzle 0005 applied via @neondatabase/serverless (raw 5432 blocked); drizzle.__drizzle_migrations seeded with all 6 journal entries (drizzle-kit migrate was never run against this DB — future runs are now clean no-ops); db/policies.sql re-applied (resume_documents RLS verified: 2 policies, RLS on, ops_app select/insert, non-BYPASSRLS). Worker DEPLOYED version e759e0a9-e302-42ec-b8b8-612f9177e491. Live-verified as operator vamshik: full /api/resumes CRUD cycle (create -> PATCH bumps version 1->2 + stores versions[] -> GET -> DELETE -> list []), POST /api/resumes/ai returned a real Haiku rewrite, GET /api/matches/:id hydrated (Data Engineer @ tavus, fit 85, 7 matched skills). Web UI ships via Vercel on merge. OPEN: rotate the Neon owner password pasted in chat; vestigial ops_system role still on Neon (classifier denied dropping it — manual: drop owned by ops_system; drop role if exists ops_system;)."
+    },
+    {
+      "id": "f-157",
+      "name": "Activity — unified daily worklist + autopilot surface",
+      "description": "GET /api/activity/worklist derives the operator's day from live pipeline state (new matches to review, approved-but-unsent resumes, employer replies once f-158 lands, stale drafts) grouped review/send/reply/decide with per-task done-state persistence; per-candidate daily application targets. Frontend: /activity page (category sections + done toggles + right rail with targets and today's calendar) replacing the placeholder, plus an autopilot section (profiles with autopilot on + recent automatic actions).",
+      "dependencies": [
+        "f-155"
+      ],
+      "status": "not-started"
+    },
+    {
+      "id": "f-158",
+      "name": "Messaging — operator inbox (email via Postmark) + candidate chat",
+      "description": "New threads (channel email|chat, client_id, subject, participants) + messages (direction, author, body, attachments jsonb) tables + RLS; endpoints for list/read/create thread, post message, R2 attachment upload, read receipts; Postmark outbound send + signature-verified inbound webhook POST /api/inbound/email parsing recruiter replies into threads (optionally advancing the linked placement stage via the f-155 writes); realtime = polling/SSE v1 (Durable Object later). Frontend: /inbox (filters, candidate selector, thread list, conversation pane, compose + attachments) and /chat (candidate threads) ported from prototype dash-inbox/dash-chat; navbar unread badges.",
+      "dependencies": [
+        "f-154"
+      ],
+      "status": "not-started"
+    },
+    {
+      "id": "f-159",
+      "name": "Calendar — events CRUD + week view + schedule modal",
+      "description": "New calendar_events table (org_id, client_id, kind, start/end, attendees, job_id, notes) + RLS; GET/POST/PATCH/DELETE /api/calendar merged with the existing placement-derived events. Frontend: week view + a Schedule modal on /calendar (month+agenda restyle lands in f-155).",
+      "dependencies": [
+        "f-154"
+      ],
+      "status": "not-started"
+    },
+    {
+      "id": "f-160",
+      "name": "Apply-on-behalf (human-in-the-loop) + notifications",
+      "description": "Notifications table + GET /api/notifications + read receipts driving the navbar badges; a guided apply checklist in Profile/Review — open the posting via get_job.url, attach the tailored CV, mark the placement applied (reuses f-155 placement writes). Explicitly NO ATS auto-submit automation (ToS risk; deferred by decision D3 of the redesign plan). Client portal + onboarding remain the pre-existing f-137 / f-145.",
+      "dependencies": [
+        "f-155",
+        "f-158"
+      ],
+      "status": "not-started"
     }
   ]
 }

@@ -6,8 +6,9 @@ import { Check, X, ExternalLink } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Chip } from "@/components/ui/chip";
 import { CommandBar } from "@/components/command-bar";
+import { CompanyLogo, FitScore } from "@/components/primitives";
 import { api } from "@/lib/api";
-import type { Match, MatchConfidence } from "@/lib/types";
+import type { Client, Match, MatchConfidence } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // Review — the match-review queue (f-139 P2; relocated here from Explore, which
@@ -23,8 +24,7 @@ const FILTERS: { id: "all" | MatchConfidence; label: string }[] = [
 
 function FitChip({ score }: { score: number | null }) {
   if (score == null) return <Chip tone="neutral">— fit</Chip>;
-  const tone = score >= 80 ? "success" : score >= 60 ? "warning" : "neutral";
-  return <Chip tone={tone}>{score} fit</Chip>;
+  return <FitScore score={score} />;
 }
 
 function ConfidenceChip({ confidence }: { confidence: MatchConfidence | null }) {
@@ -61,15 +61,18 @@ function MatchCard({
 }) {
   const blocked = (m.guardrails?.length ?? 0) > 0;
   return (
-    <div className="border border-border bg-card p-4">
+    <div className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-start justify-between gap-4">
         <button onClick={onView} className="flex min-w-0 items-start gap-3 text-left">
-          <Avatar name={m.clientName} size={32} />
+          {m.company ? <CompanyLogo company={m.company} size={32} /> : <Avatar name={m.clientName} size={32} />}
           <div className="min-w-0">
-            <div className="truncate text-sm font-medium">{m.clientName}</div>
-            <div className="truncate text-sm text-muted-foreground">
+            <div className="truncate text-sm font-medium">
               {m.jobTitle ?? "Role pending"}
-              {m.company ? <span className="text-foreground"> @ {m.company}</span> : null}
+              {m.company ? <span className="text-muted-foreground"> @ {m.company}</span> : null}
+            </div>
+            <div className="flex items-center gap-1.5 truncate text-sm text-muted-foreground">
+              <Avatar name={m.clientName} size={16} />
+              {m.clientName}
             </div>
             {m.location && <div className="text-xs text-muted-foreground">{m.location}</div>}
           </div>
@@ -118,14 +121,14 @@ function MatchCard({
           onClick={onApprove}
           disabled={busy || blocked}
           title={blocked ? "A guardrail blocks this match" : "Approve & queue résumé"}
-          className="flex items-center gap-1.5 bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/85 disabled:opacity-40"
+          className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/85 disabled:opacity-40"
         >
           <Check className="size-4" /> Approve
         </button>
         <button
           onClick={onDecline}
           disabled={busy}
-          className="flex items-center gap-1.5 border border-border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-40"
+          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-40"
         >
           <X className="size-4" /> Decline
         </button>
@@ -236,14 +239,14 @@ function Drawer({
           <button
             onClick={onApprove}
             disabled={busy || blocked}
-            className="flex items-center gap-1.5 bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/85 disabled:opacity-40"
+            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/85 disabled:opacity-40"
           >
             <Check className="size-4" /> Approve &amp; queue
           </button>
           <button
             onClick={onDecline}
             disabled={busy}
-            className="flex items-center gap-1.5 border border-border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-40"
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-40"
           >
             <X className="size-4" /> Decline
           </button>
@@ -257,18 +260,27 @@ export default function ReviewPage() {
   const router = useRouter();
   const [matches, setMatches] = useState<Match[] | null>(null);
   const [filter, setFilter] = useState<"all" | MatchConfidence>("all");
+  const [candidate, setCandidate] = useState<string>("all");
+  const [clients, setClients] = useState<Client[]>([]);
   const [selected, setSelected] = useState<Match | null>(null);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listClients().then(setClients).catch(() => {});
+  }, []);
 
   const load = useCallback(() => {
     setMatches(null);
     setError(null);
     api
-      .listMatches(filter === "all" ? undefined : { confidence: filter })
+      .listMatches({
+        ...(filter === "all" ? {} : { confidence: filter }),
+        ...(candidate === "all" ? {} : { candidateId: candidate }),
+      })
       .then(setMatches)
       .catch((e: Error) => setError(e.message));
-  }, [filter]);
+  }, [filter, candidate]);
 
   useEffect(() => load(), [load]);
 
@@ -302,21 +314,36 @@ export default function ReviewPage() {
             {matches ? `${matches.length} matches to review` : "Loading matches…"}
           </p>
         </div>
-        <div className="flex items-center gap-1 border border-border p-1">
-          {FILTERS.map((f) => (
-            <button
-              key={f.id}
-              onClick={() => setFilter(f.id)}
-              className={cn(
-                "px-3 py-1 text-sm font-medium transition-colors",
-                filter === f.id
-                  ? "bg-accent text-accent-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {f.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <select
+            value={candidate}
+            onChange={(e) => setCandidate(e.target.value)}
+            className="h-8 rounded-lg border border-border bg-card px-2 text-sm text-foreground"
+            aria-label="Filter by candidate"
+          >
+            <option value="all">All candidates</option>
+            {clients.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.fullName}
+              </option>
+            ))}
+          </select>
+          <div className="flex items-center gap-1 rounded-lg border border-border p-1">
+            {FILTERS.map((f) => (
+              <button
+                key={f.id}
+                onClick={() => setFilter(f.id)}
+                className={cn(
+                  "rounded-md px-3 py-1 text-sm font-medium transition-colors",
+                  filter === f.id
+                    ? "bg-accent text-accent-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -331,7 +358,7 @@ export default function ReviewPage() {
       )}
 
       {matches && matches.length === 0 && !error && (
-        <div className="border border-border bg-card px-6 py-16 text-center text-sm text-muted-foreground">
+        <div className="rounded-xl border border-border bg-card px-6 py-16 text-center text-sm text-muted-foreground">
           No matches to review. They appear here once a candidate&rsquo;s campaign surfaces jobs.
         </div>
       )}

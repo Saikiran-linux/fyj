@@ -326,6 +326,39 @@ export const feedback = pgTable(
   ],
 );
 
+// ── resume_documents (Write library + tailor-workspace persistence, f-156) ─
+// A saved résumé document: block-editor JSON (meta + blocks + capped version
+// snapshots) the /write library and /tailor workspace edit. client_id is
+// NULLABLE — an org-wide draft not attached to a candidate; source_match_id
+// links a doc born from a tailoring workspace to its campaign match. The
+// markdown sent to employers still lives in reports.full_markdown — a doc is
+// the editable working copy, converted to markdown on save.
+export const resumeDocuments = pgTable(
+  "resume_documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    clientId: uuid("client_id").references(() => clients.id, { onDelete: "cascade" }),
+    sourceMatchId: uuid("source_match_id").references(() => campaignMatches.id, {
+      onDelete: "set null",
+    }),
+    title: text("title").notNull(),
+    bodyJson: jsonb("body_json").notNull().default(sql`'{}'::jsonb`),
+    version: integer("version").notNull().default(1),
+    r2PdfKey: text("r2_pdf_key"),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("resume_documents_org_idx").on(t.orgId),
+    index("resume_documents_client_idx").on(t.clientId),
+    index("resume_documents_match_idx").on(t.sourceMatchId),
+  ],
+);
+
 // ── audit_log (admin-readable; written server-side) ────────────────────
 export const auditLog = pgTable(
   "audit_log",

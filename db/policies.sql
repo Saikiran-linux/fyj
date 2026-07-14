@@ -84,6 +84,7 @@ alter table public.campaign_matches enable row level security;
 alter table public.reports          enable row level security;
 alter table public.placements       enable row level security;
 alter table public.feedback         enable row level security;
+alter table public.resume_documents enable row level security;
 alter table public.audit_log        enable row level security;
 
 -- ── Better Auth tables (user / session / account / verification) ──────────
@@ -201,6 +202,29 @@ create policy reports_staff_write on public.reports for all
          and app.current_role() in ('admin','operator')
          and app.can_access_client(client_id));
 
+-- ── resume_documents (Write library, f-156) — staff-only ──────────────
+-- client_id is NULLABLE (an org-wide draft), so the usual can_access_client
+-- one-liner gets an "or client_id is null" escape: any staff seat in the org
+-- may read org-wide drafts; candidate-scoped docs follow the same
+-- operator-book gating as every other client child table. Never exposed to
+-- the client portal (like reports — these are working documents).
+drop policy if exists resume_documents_select on public.resume_documents;
+create policy resume_documents_select on public.resume_documents for select
+  using (org_id = app.current_org_id()
+         and app.current_principal() = 'staff'
+         and (client_id is null or app.can_access_client(client_id)));
+
+drop policy if exists resume_documents_staff_write on public.resume_documents;
+create policy resume_documents_staff_write on public.resume_documents for all
+  using (org_id = app.current_org_id()
+         and app.current_principal() = 'staff'
+         and app.current_role() in ('admin','operator')
+         and (client_id is null or app.can_access_client(client_id)))
+  with check (org_id = app.current_org_id()
+         and app.current_principal() = 'staff'
+         and app.current_role() in ('admin','operator')
+         and (client_id is null or app.can_access_client(client_id)));
+
 -- ── feedback (staff + client read; client OR staff insert, immutable) ─
 drop policy if exists feedback_select on public.feedback;
 create policy feedback_select on public.feedback for select
@@ -263,24 +287,16 @@ begin
 end $$;
 
 -- ============================================================================
--- System role — the TRUSTED cron/queue Worker (matcher) connects as this.
+-- No separate matcher role (ops_system is retired).
 -- ============================================================================
--- The continuous matcher legitimately spans all orgs (list active campaigns),
--- which RLS blocks for ops_app. ops_system has BYPASSRLS and is used ONLY by the
--- background Worker over its own Hyperdrive binding — NEVER on the request path.
--- Each match run still touches exactly one campaign's data.
-do $$
-begin
-  if not exists (select 1 from pg_roles where rolname = 'ops_system') then
-    create role ops_system login bypassrls;
-  end if;
-end $$;
-
-grant usage on schema public, app to ops_system;
-grant select, insert, update, delete on all tables in schema public to ops_system;
-grant execute on all functions in schema app to ops_system;
-alter default privileges in schema public
-  grant select, insert, update, delete on tables to ops_system;
+-- The background matcher (cron/queue) connects as the same non-BYPASSRLS
+-- ops_app role; its cross-tenant steps go through the SECURITY DEFINER
+-- functions in this file (app.list_active_campaigns / app.get_campaign_for_match
+-- / app.record_campaign_run), each scoped to a single campaign's data. An
+-- earlier design used a BYPASSRLS `ops_system` role, but Neon's owner role
+-- cannot grant BYPASSRLS via SQL, so it never actually worked and is no longer
+-- created here. If a vestigial `ops_system` role exists in your Neon project,
+-- remove it manually:  drop owned by ops_system; drop role if exists ops_system;
 
 
 -- ============================================================================
@@ -335,8 +351,8 @@ begin
 end $$;
 
 -- These are defined AFTER the blanket grant above, so grant them explicitly.
-grant execute on function app.resolve_staff_memberships(text) to ops_app, ops_system;
-grant execute on function app.resolve_client_principal(text)  to ops_app, ops_system;
+grant execute on function app.resolve_staff_memberships(text) to ops_app;
+grant execute on function app.resolve_client_principal(text)  to ops_app;
 grant execute on function app.bootstrap_org_for_user(text, text) to ops_app;
 
 
@@ -431,9 +447,9 @@ begin
   update public.campaigns set last_run_at = now() where id = p_campaign_id;
 end $$;
 
-grant execute on function app.list_active_campaigns()           to ops_app, ops_system;
-grant execute on function app.get_campaign_for_match(uuid)      to ops_app, ops_system;
-grant execute on function app.record_campaign_run(uuid, jsonb)  to ops_app, ops_system;
+grant execute on function app.list_active_campaigns()           to ops_app;
+grant execute on function app.get_campaign_for_match(uuid)      to ops_app;
+grant execute on function app.record_campaign_run(uuid, jsonb)  to ops_app;
 
 -- f-141: a UI "campaign" = a client_profiles row + its 1:1 campaigns row. The
 -- request role can't INSERT/UPDATE campaigns directly (no write policy on the
@@ -464,7 +480,7 @@ begin
   return v_campaign;
 end $$;
 
-grant execute on function app.upsert_campaign_for_profile(uuid, boolean, text) to ops_app, ops_system;
+grant execute on function app.upsert_campaign_for_profile(uuid, boolean, text) to ops_app;
 
 
 -- ============================================================================
