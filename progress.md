@@ -54,16 +54,34 @@ lie), meta is name+contact only (that's what the markdown/PDF engine renders).
 **Gates.** `./init.sh` green (worker tsc; db:generate no-drift after 0005; web tsc) + web
 `next build` green — 21 routes incl. `/tailor/[matchId]` (4.97 kB) and the real `/write` (3.45 kB).
 
-**NOT done — needs the user (blocked in-session):**
-1. `npm run db:migrate` + `npm run db:policies` with the Neon **owner** `DATABASE_URL` (no cred
-   in this session; ops_app can't run DDL). Applies drizzle 0005 + the resume_documents policies.
-2. `npm run deploy` (wrangler is authed but the permission classifier denied the deploy; set
-   `NODE_EXTRA_CA_CERTS=$HOME/.career-ops/norton-root.pem` first). Until both run, the deployed
-   Worker lacks the new routes (/api/resumes* 404; after deploy-without-migrate they'd 500 —
-   run the migration first).
-3. Vercel ships /write + /tailor on merge to main (PR #35 first, then this branch's PR).
-Post-deploy smoke: create/edit a doc in /write → `resume_documents` row; open a tailored match's
-workspace → Save → reports.full_markdown updates; POST /api/resumes/ai returns a rewritten line.
+**Closed out later the same session — user supplied the Neon owner URL + authorized deploy.**
+- **Migration applied live** via `@neondatabase/serverless` WebSocket Client (raw 5432 blocked in
+  this sandbox, same as f-152): drizzle `0005_luxuriant_starhawk` created `resume_documents`;
+  `db/policies.sql` re-applied. Verified: RLS on, both policies present, `ops_app` has
+  select/insert and stays non-BYPASSRLS.
+- **Journal reconciled:** live Neon had NO `drizzle.__drizzle_migrations` at all (drizzle-kit
+  migrate was never run there — every prior migration was applied manually). Created it and
+  seeded all 6 entries (hash = sha256 of each file, created_at = journal `when`), so a future
+  `npm run db:migrate` is a clean no-op instead of re-running 0000..0005 — 0004 re-running would
+  have re-NULLed `client_profiles.embedding`.
+- **Worker deployed** — version `e759e0a9-e302-42ec-b8b8-612f9177e491`.
+- **Live-verified as `vamshik`:** `/api/resumes` full CRUD cycle (create → PATCH bumps version
+  1→2 + persists `versions[]` → GET → DELETE → list `[]`); `POST /api/resumes/ai` returned a real
+  Haiku rewrite ("worked on backend services…" → "Engineered backend services supporting product
+  data pipelines…"); `GET /api/matches/:id` hydrates (Data Engineer @ tavus, fit 85, 7 matched
+  skills). First request after deploy 404'd once (version propagation), fine seconds later.
+- Earlier in the session, the prod placement stage-write was also driven live
+  (`ready_to_send → interview → back`, fresh `stageChangedAt` both ways) — f-155's open item.
+
+**Still open:**
+1. **Rotate the Neon owner password** — pasted in chat this session (third occurrence of the
+   pattern; docs/INFRA-SETUP.md standing rule).
+2. Vestigial `ops_system` role still exists on live Neon (P0 documented manual cleanup; the
+   permission classifier vetoed dropping it from here): `drop owned by ops_system; drop role if
+   exists ops_system;`. It's non-BYPASSRLS and unused — inert meanwhile.
+3. Vercel ships /write + /tailor on merge to main (PR #35 first, then this branch's PR). UI-level
+   smoke after merge: create/edit a doc in /write; open a match workspace → Save → drawer shows
+   the edit; AI chip accept path.
 
 ---
 
