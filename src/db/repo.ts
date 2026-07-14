@@ -16,6 +16,7 @@ import {
   matchConfidence,
   feedbackSignal,
   memberRole,
+  placementStatus,
 } from "./schema";
 import { user } from "./auth-schema";
 
@@ -36,6 +37,7 @@ export type ClientStatus = (typeof clientStatus.enumValues)[number];
 export type ConsentStatus = (typeof consentStatus.enumValues)[number];
 export type FeedbackSignal = (typeof feedbackSignal.enumValues)[number];
 export type MemberRole = (typeof memberRole.enumValues)[number];
+export type PlacementStatus = (typeof placementStatus.enumValues)[number];
 
 export interface NewClientInput {
   fullName: string;
@@ -552,6 +554,86 @@ export function listApplications(
       appliedAt: r.appliedAt ? new Date(r.appliedAt).toISOString() : null,
       updatedAt: new Date(r.updatedAt).toISOString(),
     }));
+  });
+}
+
+// ── placement writes (f-155) ────────────────────────────────────────────
+// The pipeline is presented as tables/lists (per the design — no kanban);
+// these are the stage/notes mutations behind those lists. Stage changes stamp
+// stage_changed_at (time-in-stage) and the first move to "applied" stamps
+// applied_at without ever un-setting it on later transitions.
+
+export interface UpdatePlacementInput {
+  status?: PlacementStatus;
+  notes?: string | null;
+  followUps?: unknown[];
+}
+
+export function updatePlacement(
+  db: DB,
+  who: Principal,
+  placementId: string,
+  input: UpdatePlacementInput,
+) {
+  return withTenant(db, who, async (tx) => {
+    const now = new Date();
+    const [row] = await tx
+      .update(placements)
+      .set({
+        ...(input.status !== undefined
+          ? {
+              status: input.status,
+              stageChangedAt: now,
+              ...(input.status === "applied"
+                ? { appliedAt: sql`coalesce(${placements.appliedAt}, now())` }
+                : {}),
+            }
+          : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        ...(input.followUps !== undefined ? { followUps: input.followUps } : {}),
+        updatedAt: now,
+      })
+      .where(eq(placements.id, placementId))
+      .returning();
+    if (row) await audit(tx, who, "placement.update", "placement", row.id, { ...input });
+    return row ?? null;
+  });
+}
+
+export interface CreatePlacementInput {
+  clientId: string;
+  jobTitle: string;
+  companyName: string;
+  jobId?: string | null;
+  companyId?: string | null;
+  status?: PlacementStatus;
+  notes?: string | null;
+}
+
+export function createPlacement(db: DB, who: Principal, input: CreatePlacementInput) {
+  return withTenant(db, who, async (tx) => {
+    const [row] = await tx
+      .insert(placements)
+      .values({
+        orgId: who.orgId,
+        clientId: input.clientId,
+        jobId: input.jobId ?? null,
+        companyId: input.companyId ?? null,
+        jobTitle: input.jobTitle,
+        companyName: input.companyName,
+        status: input.status ?? "lead",
+        stageChangedAt: new Date(),
+        notes: input.notes ?? null,
+        createdBy: who.userId,
+      })
+      .returning();
+    if (row)
+      await audit(tx, who, "placement.create", "placement", row.id, {
+        clientId: input.clientId,
+        jobTitle: input.jobTitle,
+        companyName: input.companyName,
+      });
+    return row ?? null;
   });
 }
 

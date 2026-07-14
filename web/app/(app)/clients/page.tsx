@@ -11,16 +11,22 @@ import { Label } from "@/components/ui/label";
 import { Avatar } from "@/components/ui/avatar";
 import { Chip, statusTone } from "@/components/ui/chip";
 import { api } from "@/lib/api";
-import type { Client, ConsentStatus } from "@/lib/types";
+import type { ApplicationRow, Client, ConsentStatus, Match } from "@/lib/types";
 
 function consentTone(consent: ConsentStatus) {
   return consent === "active" ? "success" : consent === "pending" ? "warning" : "danger";
 }
 
+// Live stages — anything still in flight (not terminal).
+const LIVE = new Set(["rejected", "withdrawn", "placed"]);
+
 export default function CandidatesPage() {
   const router = useRouter();
   const params = useSearchParams();
   const [clients, setClients] = useState<Client[] | null>(null);
+  const [matches, setMatches] = useState<Match[]>([]);
+  const [apps, setApps] = useState<ApplicationRow[]>([]);
+  const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(params.get("new") === "1");
   const [fullName, setFullName] = useState("");
@@ -35,7 +41,25 @@ export default function CandidatesPage() {
 
   useEffect(() => {
     void load();
+    // Per-candidate roster metrics (new matches / live applications) — two
+    // org-wide reads grouped client-side; best-effort, the roster renders
+    // without them.
+    api.listMatches().then(setMatches).catch(() => {});
+    api.listApplications().then(setApps).catch(() => {});
   }, []);
+
+  const metrics = (clientId: string) => ({
+    newMatches: matches.filter((m) => m.clientId === clientId && m.action === "new").length,
+    liveApps: apps.filter((a) => a.clientId === clientId && !LIVE.has(a.status)).length,
+  });
+
+  const visible =
+    clients?.filter(
+      (c) =>
+        !query.trim() ||
+        c.fullName.toLowerCase().includes(query.trim().toLowerCase()) ||
+        (c.headline ?? "").toLowerCase().includes(query.trim().toLowerCase()),
+    ) ?? null;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -99,39 +123,64 @@ export default function CandidatesPage() {
         )}
 
         {error && (
-          <div className="mb-4 border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+          <div className="mb-4 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
             Couldn&rsquo;t load candidates — {error}
           </div>
         )}
         {!error && clients === null && <p className="text-sm text-muted-foreground">Loading…</p>}
         {!error && clients?.length === 0 && (
-          <div className="border border-border bg-card px-6 py-16 text-center text-sm text-muted-foreground">
+          <div className="rounded-xl border border-border bg-card px-6 py-16 text-center text-sm text-muted-foreground">
             No candidates yet. Add your first one.
           </div>
         )}
 
+        {clients && clients.length > 0 && (
+          <div className="mb-4">
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search candidates…"
+              className="w-64"
+              aria-label="Search candidates"
+            />
+          </div>
+        )}
+
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {clients?.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => router.push(`/clients/${c.id}`)}
-              className="flex flex-col gap-3 border border-border bg-card p-4 text-left transition-colors hover:bg-muted/40"
-            >
-              <div className="flex items-center gap-3">
-                <Avatar name={c.fullName} size={36} />
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-foreground">{c.fullName}</div>
-                  <div className="truncate text-xs text-muted-foreground">
-                    {c.headline ?? c.email ?? "—"}
+          {visible?.map((c) => {
+            const m = metrics(c.id);
+            return (
+              <button
+                key={c.id}
+                onClick={() => router.push(`/clients/${c.id}`)}
+                className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:bg-muted/40"
+              >
+                <div className="flex items-center gap-3">
+                  <Avatar name={c.fullName} size={36} />
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-foreground">{c.fullName}</div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {c.headline ?? c.email ?? "—"}
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <Chip tone={statusTone(c.status)}>{c.status}</Chip>
-                <Chip tone={consentTone(c.consentStatus)}>consent: {c.consentStatus}</Chip>
-              </div>
-            </button>
-          ))}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Chip tone={statusTone(c.status)}>{c.status}</Chip>
+                  <Chip tone={consentTone(c.consentStatus)}>consent: {c.consentStatus}</Chip>
+                </div>
+                <div className="flex items-center gap-3 font-mono text-[11px] text-muted-foreground tabular-nums">
+                  <span className={m.newMatches > 0 ? "font-semibold text-primary" : ""}>
+                    {m.newMatches} new match{m.newMatches === 1 ? "" : "es"}
+                  </span>
+                  <span>·</span>
+                  <span>{m.liveApps} live app{m.liveApps === 1 ? "" : "s"}</span>
+                </div>
+              </button>
+            );
+          })}
+          {visible && visible.length === 0 && clients && clients.length > 0 && (
+            <p className="text-sm text-muted-foreground">No candidates match “{query}”.</p>
+          )}
         </div>
       </div>
     </>

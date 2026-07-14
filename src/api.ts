@@ -12,6 +12,7 @@ import {
   consentStatus,
   feedbackSignal,
   memberRole,
+  placementStatus,
 } from "./db/schema";
 import * as Sentry from "@sentry/cloudflare";
 import { parseResume } from "./resume";
@@ -957,6 +958,55 @@ export function createApi() {
     const p = c.get("principal");
     if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
     return c.json(await repo.listApplications(c.get("db"), p));
+  });
+
+  // ── placement writes (f-155) — stage/notes/follow-ups from the pipeline
+  // lists (Profile applications tab, dashboard table). No kanban by design.
+  app.patch("/api/placements/:id", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      status?: string;
+      notes?: string | null;
+      followUps?: unknown[];
+    };
+    if (
+      body.status !== undefined &&
+      !placementStatus.enumValues.includes(body.status as repo.PlacementStatus)
+    )
+      return c.json({ error: "invalid status" }, 400);
+    if (body.followUps !== undefined && !Array.isArray(body.followUps))
+      return c.json({ error: "followUps must be an array" }, 400);
+    const row = await repo.updatePlacement(c.get("db"), p, c.req.param("id"), {
+      status: body.status as repo.PlacementStatus | undefined,
+      notes: body.notes,
+      followUps: body.followUps,
+    });
+    return row ? c.json(row) : c.json({ error: "not_found" }, 404);
+  });
+
+  // Manual pipeline entry (a job sourced outside the index — jobId optional).
+  app.post("/api/placements", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as Partial<repo.CreatePlacementInput>;
+    if (!body.clientId || !body.jobTitle?.trim() || !body.companyName?.trim())
+      return c.json({ error: "clientId + jobTitle + companyName required" }, 400);
+    if (
+      body.status !== undefined &&
+      !placementStatus.enumValues.includes(body.status as repo.PlacementStatus)
+    )
+      return c.json({ error: "invalid status" }, 400);
+    const row = await repo.createPlacement(c.get("db"), p, {
+      clientId: body.clientId,
+      jobTitle: body.jobTitle.trim(),
+      companyName: body.companyName.trim(),
+      jobId: body.jobId,
+      companyId: body.companyId,
+      status: body.status,
+      notes: body.notes,
+    });
+    return row ? c.json(row, 201) : c.json({ error: "not_found" }, 404);
   });
 
   // Calendar (f-139 P4): schedule events derived from placements by date.

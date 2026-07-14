@@ -112,6 +112,16 @@ export interface JobHit {
   description: string | null;
   score: number;
   rank: number;
+  // display enrichment (additive on the Worker; null on older responses)
+  workplace?: string | null;
+  employmentType?: string | null;
+  source?: string | null;
+  postedAt?: string | null;
+  compMin?: number | null;
+  compMax?: number | null;
+  compCurrency?: string | null;
+  compInterval?: string | null;
+  compText?: string | null;
 }
 
 export type MatchActionValue =
@@ -198,6 +208,20 @@ export interface ApplicationRow {
   appliedAt: string | null;
   updatedAt: string;
 }
+
+/** Pipeline stages (placements.status). Presented as lists — no kanban. */
+export type PlacementStatus =
+  | "lead"
+  | "drafted"
+  | "ready_to_send"
+  | "applied"
+  | "responded"
+  | "screening"
+  | "interview"
+  | "offer"
+  | "placed"
+  | "rejected"
+  | "withdrawn";
 
 // ── match review / Explore (f-139 P2) ──────────────────────────────────
 export type MatchConfidence = "high" | "medium" | "low";

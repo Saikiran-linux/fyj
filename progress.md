@@ -41,7 +41,27 @@ pre-paint prefs boot in a real browser (permission-classifier outage mid-session
 
 **Open for the user:** merge PR #35, then the redesign PR; `npm run deploy` (wrangler is
 authed) so prod picks up the api.ts/policies hygiene — policies.sql re-apply is optional
-(the retired-role edit is inert on an existing DB).
+(the retired-role edit is inert on an existing DB). NOTE: local `npm run deploy` hit the
+Norton TLS intercept — set `NODE_EXTRA_CA_CERTS=$HOME\.career-ops\norton-root.pem` first
+(same fix as fyj_scanner; consider persisting it as a user env var).
+
+**P2 — surface richness + placement writes (f-155, same session).** Backend:
+`repo.updatePlacement`/`createPlacement` + `PATCH/POST /api/placements` (staff non-viewer,
+enum-validated, audited; stage change stamps `stage_changed_at`, first move to `applied`
+coalesce-stamps `applied_at`) — no schema change (`db:generate` clean; the pipeline stages
+and denormalized job cols already existed from f-139 P3). Web: Dashboard delta chips +
+DotColumns throughput + accent funnel + **real Role/Company columns** (the "—" placeholders
+were stale — placements carry job_title/company_name); Review: FitScore bars, CompanyLogo,
+candidate filter, rounded chrome; **Explore rebuilt** — browse-mode discovery rails
+(Fresh / Remote-first / Top-comp from one `recentJobs(60)` call; the web `JobHit` mirror was
+dropping the workplace/comp/source/postedAt fields the Worker already returns — extended) +
+search grid + slide-over drawer with the real posting description; Candidates roster search +
+per-candidate new-matches/live-apps metrics; Profile applications tab **stage is now an
+inline Select** → `PATCH /api/placements/:id`; Calendar rounded + CompanyLogo rows. Gates
+green (worker tsc / web tsc / next build, 20 routes). Deliberate deviation: roster stays a
+grid → detail navigation (adding search + metrics) rather than the prototype's collapsible
+master/detail sidebar — the existing IA, far less churn. NOT runtime-verified end-to-end
+(no `.dev.vars`); drive a live stage change after deploy.
 
 ## 2026-07-02 — Résumé Tailoring Lab (prompt/model A/B harness, f-153)
 

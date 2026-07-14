@@ -13,6 +13,7 @@ import type {
   TrendPoint,
   ActivityEvent,
   ApplicationRow,
+  PlacementStatus,
   Match,
   MatchConfidence,
   ApproveMatchResult,
@@ -204,6 +205,25 @@ export const api = {
   dashboardTrends: () => req<TrendPoint[]>("/api/dashboard/trends"),
   dashboardActivity: () => req<ActivityEvent[]>("/api/dashboard/activity"),
   listApplications: () => req<ApplicationRow[]>("/api/applications"),
+
+  // Placement writes (f-155) — stage/notes/follow-ups from the pipeline lists.
+  updatePlacement: (
+    id: string,
+    input: { status?: PlacementStatus; notes?: string | null; followUps?: unknown[] },
+  ) =>
+    req<ApplicationRow>(`/api/placements/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  createPlacement: (input: {
+    clientId: string;
+    jobTitle: string;
+    companyName: string;
+    jobId?: string | null;
+    companyId?: string | null;
+    status?: PlacementStatus;
+    notes?: string | null;
+  }) => req<ApplicationRow>("/api/placements", { method: "POST", body: JSON.stringify(input) }),
 
   // Match review / Explore (f-139 P2)
   listMatches: (params?: { candidateId?: string; confidence?: MatchConfidence }) => {
