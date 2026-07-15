@@ -44,11 +44,14 @@ tailor-lab stack base, not main, so #37 carries everything; Vercel preview built
 
 **Live state.** Neon migration 0006 + policies APPLIED + verified live (RLS on, both policies,
 ops_app sel/ins/del, journal row 7 recorded). Gates green (worker tsc · db:generate · web tsc ·
-next build — /activity 5.24 kB). **Worker deploy PENDING — the permission classifier requires
-per-instance user authorization; run `npm run deploy`** (with NODE_EXTRA_CA_CERTS set). Until
-then the deployed Worker 404s the two new routes; the DB side is already in place. Post-deploy
-smoke: GET /api/activity/worklist as vamshik (expect ≥6 send tasks + review tasks + targets),
-POST /api/activity/done round-trip, then check /activity in the UI after the PR merges.
+next build — /activity 5.24 kB). **Worker DEPLOYED** (user-authorized), version
+`eb384afa-002a-4770-b3a8-1beb7d64053f`. Live-verified as `vamshik`: `GET /api/activity/worklist`
+returned 16 real tasks (10 review + 6 send, 0 reply/decide — no candidates in those pipeline
+stages currently) + 2 candidate targets, correct shapes (fit score, guardrail text, matchId for
+the /tailor deep link, submitted-vs-target); `POST /api/activity/done` round-tripped
+true→false→confirmed each way; an invalid taskKey rejected with 400. UI-level check (the
+/activity page itself, category grouping, checkbox click) still pending — do that after the PR
+merges and Vercel ships it.
 
 ## 2026-07-14 (later) — P3: Write library + standalone tailor workspace (f-156); prod Worker verified live
 
