@@ -15,9 +15,18 @@ const TONES: Record<Tone, string> = {
   neutral: "bg-muted text-muted-foreground",
 };
 
-export function Chip({ tone = "neutral", children }: { tone?: Tone; children: React.ReactNode }) {
+export function Chip({
+  tone = "neutral",
+  title,
+  children,
+}: {
+  tone?: Tone;
+  title?: string;
+  children: React.ReactNode;
+}) {
   return (
     <span
+      title={title}
       className={cn(
         "inline-flex h-5 w-fit shrink-0 items-center justify-center gap-1 px-2 py-0.5 text-xs font-medium whitespace-nowrap",
         TONES[tone],

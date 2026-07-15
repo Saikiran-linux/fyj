@@ -4,6 +4,52 @@ Append/update at the top each session. Long-form rationale → commit messages +
 
 ---
 
+## 2026-07-14 (later still) — P4: Activity worklist (f-157); UI header cleanup; PR #37
+
+**Plan change first (user decision):** the Autopilot surface was REMOVED from Phase 4 in the plan
+doc — no `GET /api/autopilot`, no Autopilot section — because no cron/queue job acts on the
+`client_profiles.autopilot` flag (the matcher surfaces matches for manual review regardless), so
+any Autopilot UI beyond the existing Profile toggle would be a control with nothing behind it.
+The P2 toggle (`PATCH /api/profiles/:id`) stays the only place the flag lives.
+
+**f-157 backend.** `activity_state` table (`drizzle/0006_woozy_tana_nile.sql`): org_id + UNIQUE
+task_key + done_by/done_at — the worklist itself is DERIVED on every read; this only remembers
+which derived tasks were checked off (stale rows for vanished tasks are harmless). Staff-only
+org-scoped RLS (viewers read, admin/operator write). `repo.listWorklist`: review = action-new
+matches (deduped per client+job, best fit first, cap 10), send = `ready_to_send` placements,
+reply = `responded`, decide = `offer` + `drafted`; placements are linked back to their campaign
+match via a separate (clientId, jobId)-IN query (a JOIN would duplicate rows when two tracks
+surfaced the same job) for `/tailor/[matchId]` deep links; targets = active clients with ≥1
+track, submitted-today from `placements.applied_at >= date_trunc('day', now())` vs
+`max(3, tracks×2)` (prototype heuristic). `repo.setActivityDone` insert/delete — deliberately
+NOT audited (checkbox toggles would spam the dashboard activity feed the audit log feeds).
+Routes: `GET /api/activity/worklist` (hydrates review-task job titles via KV-cached `getJob` —
+approve-created placements carry only jobId/companyId, their denormalized title cols are null)
++ `POST /api/activity/done` (task_key regex-validated so junk can't accumulate).
+
+**f-157 frontend.** `/activity` replaces the placeholder (port of dash-activity.jsx): greeting +
+date header, candidate filter + Open/All/Done segments, four category sections (icons, blurbs,
+open counts), TaskRow with a PERSISTED done checkbox (optimistic flip, revert on API failure)
+and a deep-link action button (Review → /review, Send → /tailor/[matchId], others →
+/clients/[id]) — unlike the prototype, acting and checking-off are separate. Right rail:
+per-candidate application targets + today's calendar events (from the existing month endpoint,
+filtered client-side) + all-caught-up empty state. `Chip` gained an optional `title` prop.
+Deviation: no fake times on agenda items (derived events are date-only — kind chips instead).
+
+**Also this session (user request):** removed the page-title headers from Explore ("Explore" +
+subtitle), Write ("Write" + subtitle) and Candidates (PageHeader title/subtitle; kept the
++ Add candidate button; PageHeader component untouched — Campaigns/Members still use it).
+And opened **PR #37** (console-redesign → main, P0–P3 delta) — PR #36 had merged into the
+tailor-lab stack base, not main, so #37 carries everything; Vercel preview built green.
+
+**Live state.** Neon migration 0006 + policies APPLIED + verified live (RLS on, both policies,
+ops_app sel/ins/del, journal row 7 recorded). Gates green (worker tsc · db:generate · web tsc ·
+next build — /activity 5.24 kB). **Worker deploy PENDING — the permission classifier requires
+per-instance user authorization; run `npm run deploy`** (with NODE_EXTRA_CA_CERTS set). Until
+then the deployed Worker 404s the two new routes; the DB side is already in place. Post-deploy
+smoke: GET /api/activity/worklist as vamshik (expect ≥6 send tasks + review tasks + targets),
+POST /api/activity/done round-trip, then check /activity in the UI after the PR merges.
+
 ## 2026-07-14 (later) — P3: Write library + standalone tailor workspace (f-156); prod Worker verified live
 
 **Live verification first (user request).** The user had deployed the Worker; verified the deploy

@@ -339,6 +339,40 @@ export type AiEditKind =
   | "continue"
   | "custom";
 
+// ── activity worklist (f-157; mirrors repo.listWorklist) ────────────────
+
+export type WorklistCategory = "review" | "send" | "reply" | "decide";
+
+export interface WorklistTask {
+  key: string; // "<cat>:<entity uuid>" — done-state identity
+  cat: WorklistCategory;
+  clientId: string;
+  clientName: string;
+  jobId: string | null;
+  companyId: string | null;
+  jobTitle: string | null;
+  companyName: string | null;
+  fitScore: number | null;
+  guardrail: string | null;
+  badge: "offer" | "draft" | null;
+  matchId: string | null;
+  placementId: string | null;
+  updatedAt: string;
+  done: boolean;
+}
+
+export interface WorklistTarget {
+  clientId: string;
+  clientName: string;
+  submittedToday: number;
+  target: number;
+}
+
+export interface Worklist {
+  tasks: WorklistTask[];
+  targets: WorklistTarget[];
+}
+
 // ── résumé prompt lab (dev tool; mirrors src/graph/tailor-lab.ts) ────────
 export interface LabModel {
   id: string;

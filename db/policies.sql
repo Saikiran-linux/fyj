@@ -85,6 +85,7 @@ alter table public.reports          enable row level security;
 alter table public.placements       enable row level security;
 alter table public.feedback         enable row level security;
 alter table public.resume_documents enable row level security;
+alter table public.activity_state   enable row level security;
 alter table public.audit_log        enable row level security;
 
 -- ── Better Auth tables (user / session / account / verification) ──────────
@@ -251,6 +252,24 @@ create policy feedback_staff_insert on public.feedback for insert
     and org_id = app.current_org_id()
     and app.can_access_client(client_id)
   );
+
+-- ── activity_state (worklist done-state, f-157) — staff-only ──────────
+-- Org-scoped operator to-do bookkeeping. The task_key values reference
+-- matches/placements whose own RLS gates the underlying data; the keys
+-- themselves are opaque, so a plain org+staff policy suffices. Viewers can
+-- read (the worklist renders for them) but not write.
+drop policy if exists activity_state_select on public.activity_state;
+create policy activity_state_select on public.activity_state for select
+  using (org_id = app.current_org_id() and app.current_principal() = 'staff');
+
+drop policy if exists activity_state_staff_write on public.activity_state;
+create policy activity_state_staff_write on public.activity_state for all
+  using (org_id = app.current_org_id()
+         and app.current_principal() = 'staff'
+         and app.current_role() in ('admin','operator'))
+  with check (org_id = app.current_org_id()
+         and app.current_principal() = 'staff'
+         and app.current_role() in ('admin','operator'));
 
 -- ── audit_log (admin read; staff insert) ──────────────────────────────
 drop policy if exists audit_log_admin_select on public.audit_log;

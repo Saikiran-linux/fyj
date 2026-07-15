@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Topbar } from "@/components/topbar";
-import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -82,11 +81,9 @@ export default function CandidatesPage() {
     <>
       <Topbar title="Candidates" />
       <div className="mx-auto max-w-6xl px-8 pb-16">
-        <PageHeader
-          title="Candidates"
-          subtitle="The job-seekers you represent."
-          action={<Button onClick={() => setCreating((v) => !v)}>+ Add candidate</Button>}
-        />
+        <div className="mb-6 flex items-center justify-end">
+          <Button onClick={() => setCreating((v) => !v)}>+ Add candidate</Button>
+        </div>
 
         {creating && (
           <Card className="mb-5 px-5">

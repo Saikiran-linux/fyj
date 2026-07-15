@@ -1005,6 +1005,41 @@ export function createApi() {
     return ok ? c.json({ ok: true, id: c.req.param("id") }) : c.json({ error: "not_found" }, 404);
   });
 
+  // ── activity worklist (f-157) ────────────────────────────────────────
+  // The operator's day, derived from live pipeline state; review tasks (and
+  // any placement missing its denormalized title — approve-created ones are)
+  // get job title/company hydrated from the read-only index (KV-cached).
+  app.get("/api/activity/worklist", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p)) return c.json({ error: "forbidden" }, 403);
+    const { tasks, targets } = await repo.listWorklist(c.get("db"), p);
+    const hydrated = await Promise.all(
+      tasks.map(async (t) => {
+        if (t.jobTitle || !t.jobId || !t.companyId) return t;
+        const job = await getJob(c.env, t.jobId, t.companyId).catch(() => null);
+        return {
+          ...t,
+          jobTitle: job?.title ?? null,
+          companyName: t.companyName ?? job?.company ?? null,
+        };
+      }),
+    );
+    return c.json({ tasks: hydrated, targets });
+  });
+
+  // Mark a derived worklist task done / not-done. Key format is validated so
+  // arbitrary strings can't accumulate in activity_state.
+  app.post("/api/activity/done", async (c) => {
+    const p = c.get("principal");
+    if (!isStaff(p) || p.role === "viewer") return c.json({ error: "forbidden" }, 403);
+    const body = (await c.req.json().catch(() => ({}))) as { taskKey?: string; done?: boolean };
+    const key = (body.taskKey ?? "").toString();
+    if (!/^(review|send|reply|decide):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(key))
+      return c.json({ error: "invalid taskKey" }, 400);
+    if (typeof body.done !== "boolean") return c.json({ error: "done must be boolean" }, 400);
+    return c.json(await repo.setActivityDone(c.get("db"), p, key, body.done));
+  });
+
   // ── résumé prompt lab (dev tool) ─────────────────────────────────────
   // Staff-only harness to A/B tailoring prompts + model combinations across the
   // planner/generator/verifier stages. GET returns the shipped defaults + model

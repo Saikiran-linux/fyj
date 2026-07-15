@@ -8,6 +8,7 @@ import {
   placements,
   reports,
   resumeDocuments,
+  activityState,
   memberships,
   feedback,
   auditLog,
@@ -1224,6 +1225,232 @@ export function deleteResumeDocument(db: DB, who: Principal, docId: string): Pro
         title: row.title,
       });
     return Boolean(row);
+  });
+}
+
+// ── activity worklist (f-157) ───────────────────────────────────────────
+// The operator's day, DERIVED from live pipeline state on every read — no
+// task rows are stored. Four categories mirror the prototype's worklist:
+//   review — campaign matches still action='new' (best fit first)
+//   send   — placements in ready_to_send (tailored résumé awaiting sign-off)
+//   reply  — placements in responded (employer replied; real threads land f-158)
+//   decide — placements in offer or drafted (needs a call / unfinished draft)
+// Done-state lives in activity_state keyed by the derived task_key; a task
+// that leaves pipeline state (e.g. the match gets approved) simply stops being
+// derived, so stale done-rows are harmless leftovers.
+
+export type WorklistCategory = "review" | "send" | "reply" | "decide";
+
+export interface WorklistTask {
+  key: string; // "<cat>:<entity uuid>"
+  cat: WorklistCategory;
+  clientId: string;
+  clientName: string;
+  jobId: string | null;
+  companyId: string | null;
+  jobTitle: string | null; // null until route-level index hydration
+  companyName: string | null;
+  fitScore: number | null;
+  guardrail: string | null;
+  badge: "offer" | "draft" | null;
+  matchId: string | null; // deep link → /tailor/[matchId] or review
+  placementId: string | null;
+  updatedAt: string;
+  done: boolean;
+}
+
+export interface WorklistTarget {
+  clientId: string;
+  clientName: string;
+  submittedToday: number;
+  target: number;
+}
+
+export interface Worklist {
+  tasks: WorklistTask[];
+  targets: WorklistTarget[];
+}
+
+const WORKLIST_PLACEMENT_STATUS: Record<string, WorklistCategory> = {
+  ready_to_send: "send",
+  responded: "reply",
+  offer: "decide",
+  drafted: "decide",
+};
+
+export function listWorklist(db: DB, who: Principal): Promise<Worklist> {
+  return withTenant(db, who, async (tx) => {
+    // review — new matches, best fit first, deduped per (client, job) like the
+    // review queue so a job surfaced by two tracks is one task.
+    const newMatches = await tx
+      .select({
+        id: campaignMatches.id,
+        clientId: campaignMatches.clientId,
+        clientName: clients.fullName,
+        jobId: campaignMatches.jobId,
+        companyId: campaignMatches.companyId,
+        fitScore: campaignMatches.fitScore,
+        guardrails: campaignMatches.guardrails,
+        surfacedAt: campaignMatches.surfacedAt,
+      })
+      .from(campaignMatches)
+      .innerJoin(clients, eq(clients.id, campaignMatches.clientId))
+      .where(eq(campaignMatches.action, "new"))
+      .orderBy(
+        sql`${campaignMatches.fitScore} desc nulls last, ${campaignMatches.score} desc nulls last`,
+      )
+      .limit(30);
+    const seen = new Set<string>();
+    const reviewRows = newMatches
+      .filter((m) => {
+        const k = `${m.clientId}:${m.jobId}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .slice(0, 10);
+
+    // send / reply / decide — placements by stage (small set; RLS scopes book).
+    const stagedPlacements = await tx
+      .select({
+        id: placements.id,
+        clientId: placements.clientId,
+        clientName: clients.fullName,
+        jobId: placements.jobId,
+        companyId: placements.companyId,
+        jobTitle: placements.jobTitle,
+        companyName: placements.companyName,
+        status: placements.status,
+        updatedAt: placements.updatedAt,
+      })
+      .from(placements)
+      .innerJoin(clients, eq(clients.id, placements.clientId))
+      .where(
+        sql`${placements.status} in ('ready_to_send', 'responded', 'offer', 'drafted')`,
+      )
+      .orderBy(desc(placements.updatedAt));
+
+    // Link placements back to their campaign match (for /tailor deep links).
+    // Separate query + JS map — a JOIN would duplicate placements when two
+    // tracks surfaced the same job.
+    const matchByClientJob = new Map<string, { id: string; fitScore: number | null }>();
+    const placementsWithJob = stagedPlacements.filter((p) => p.jobId);
+    if (placementsWithJob.length) {
+      const linkRows = await tx
+        .select({
+          id: campaignMatches.id,
+          clientId: campaignMatches.clientId,
+          jobId: campaignMatches.jobId,
+          fitScore: campaignMatches.fitScore,
+        })
+        .from(campaignMatches)
+        .where(
+          sql`(${campaignMatches.clientId}, ${campaignMatches.jobId}) in
+              (${sql.join(
+                placementsWithJob.map((p) => sql`(${p.clientId}::uuid, ${p.jobId}::uuid)`),
+                sql`, `,
+              )})`,
+        );
+      for (const r of linkRows) {
+        const k = `${r.clientId}:${r.jobId}`;
+        if (!matchByClientJob.has(k)) matchByClientJob.set(k, r);
+      }
+    }
+
+    // done-state — all org rows (small; unchecking deletes, so this stays lean).
+    const doneRows = await tx.select({ taskKey: activityState.taskKey }).from(activityState);
+    const doneKeys = new Set(doneRows.map((r) => r.taskKey));
+
+    const tasks: WorklistTask[] = [];
+    for (const m of reviewRows) {
+      const key = `review:${m.id}`;
+      tasks.push({
+        key,
+        cat: "review",
+        clientId: m.clientId,
+        clientName: m.clientName,
+        jobId: m.jobId,
+        companyId: m.companyId,
+        jobTitle: null,
+        companyName: null,
+        fitScore: m.fitScore,
+        guardrail: m.guardrails?.[0] ?? null,
+        badge: null,
+        matchId: m.id,
+        placementId: null,
+        updatedAt: new Date(m.surfacedAt).toISOString(),
+        done: doneKeys.has(key),
+      });
+    }
+    for (const p of stagedPlacements) {
+      const cat = WORKLIST_PLACEMENT_STATUS[p.status];
+      if (!cat) continue;
+      const key = `${cat}:${p.id}`;
+      const link = p.jobId ? matchByClientJob.get(`${p.clientId}:${p.jobId}`) : undefined;
+      tasks.push({
+        key,
+        cat,
+        clientId: p.clientId,
+        clientName: p.clientName,
+        jobId: p.jobId,
+        companyId: p.companyId,
+        jobTitle: p.jobTitle,
+        companyName: p.companyName,
+        fitScore: link?.fitScore ?? null,
+        guardrail: null,
+        badge: p.status === "offer" ? "offer" : p.status === "drafted" ? "draft" : null,
+        matchId: link?.id ?? null,
+        placementId: p.id,
+        updatedAt: new Date(p.updatedAt).toISOString(),
+        done: doneKeys.has(key),
+      });
+    }
+
+    // targets — active clients with ≥1 track; target scales with track count
+    // (prototype heuristic: max(3, tracks × 2)); submitted = applied TODAY.
+    const targetRows = (await tx.execute(sql`
+      select c.id as client_id, c.full_name as client_name,
+             count(distinct cp.id)::int as tracks,
+             count(distinct p.id) filter (
+               where p.applied_at >= date_trunc('day', now())
+             )::int as submitted_today
+      from clients c
+      join client_profiles cp on cp.client_id = c.id
+      left join placements p on p.client_id = c.id
+      where c.status = 'active'
+      group by c.id, c.full_name
+      order by c.full_name
+    `)) as unknown as Array<{
+      client_id: string;
+      client_name: string;
+      tracks: number;
+      submitted_today: number;
+    }>;
+    const targets: WorklistTarget[] = targetRows.map((r) => ({
+      clientId: r.client_id,
+      clientName: r.client_name,
+      submittedToday: r.submitted_today,
+      target: Math.max(3, r.tracks * 2),
+    }));
+
+    return { tasks, targets };
+  });
+}
+
+/** Persist (or clear) a worklist task's done-state. Deliberately NOT audited —
+ *  this is operator to-do bookkeeping, and auditing every checkbox toggle
+ *  would spam the dashboard activity feed the audit log feeds. */
+export function setActivityDone(db: DB, who: Principal, taskKey: string, done: boolean) {
+  return withTenant(db, who, async (tx) => {
+    if (done) {
+      await tx
+        .insert(activityState)
+        .values({ orgId: who.orgId, taskKey, doneBy: who.userId })
+        .onConflictDoNothing();
+    } else {
+      await tx.delete(activityState).where(eq(activityState.taskKey, taskKey));
+    }
+    return { taskKey, done };
   });
 }
 

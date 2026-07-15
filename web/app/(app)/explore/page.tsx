@@ -89,15 +89,6 @@ function ExploreInner() {
 
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
-      <div className="mb-5">
-        <h1 className="font-heading text-[28px] font-bold tracking-tight text-foreground">
-          Explore
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Search ~169k live jobs in plain language — or browse the newest postings below.
-        </p>
-      </div>
-
       <CommandBar onSubmit={(query) => router.push(`/explore?q=${encodeURIComponent(query)}`)} />
 
       <div className="mt-6 space-y-3">
