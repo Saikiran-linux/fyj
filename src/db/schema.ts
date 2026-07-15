@@ -359,6 +359,29 @@ export const resumeDocuments = pgTable(
   ],
 );
 
+// ── activity_state (worklist done-state, f-157) ────────────────────────
+// One row = one worklist task an operator checked off today. task_key is the
+// derived task identity ("review:<matchId>", "send:<placementId>", …) — the
+// worklist is DERIVED from pipeline state on every read, so this table only
+// remembers which derived tasks are done, never the tasks themselves. Rows are
+// cheap and org-scoped; unchecking deletes the row.
+export const activityState = pgTable(
+  "activity_state",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    taskKey: text("task_key").notNull(),
+    doneBy: text("done_by"),
+    doneAt: timestamp("done_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("activity_state_org_task_uq").on(t.orgId, t.taskKey),
+    index("activity_state_org_idx").on(t.orgId),
+  ],
+);
+
 // ── audit_log (admin-readable; written server-side) ────────────────────
 export const auditLog = pgTable(
   "audit_log",

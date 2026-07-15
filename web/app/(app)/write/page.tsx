@@ -345,14 +345,7 @@ export default function WritePage() {
 
   return (
     <div className="mx-auto max-w-5xl px-8 py-8">
-      <div className="mb-6 flex items-end justify-between gap-4">
-        <div>
-          <h1 className="font-heading text-[28px] font-bold tracking-tight text-foreground">Write</h1>
-          <p className="text-sm text-muted-foreground">
-            Create, edit and modify résumés — the same block editor, slash commands and AI assists
-            used in the tailoring workspace.
-          </p>
-        </div>
+      <div className="mb-6 flex items-center justify-end gap-4">
         <div className="flex items-center gap-2">
           <select
             value=""

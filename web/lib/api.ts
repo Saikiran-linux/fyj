@@ -31,6 +31,7 @@ import type {
   ResumeDocumentListRow,
   ResumeDocBody,
   AiEditKind,
+  Worklist,
 } from "./types";
 
 /**
@@ -265,6 +266,14 @@ export const api = {
     req<{ ok: true }>(`/api/matches/${matchId}/resume`, {
       method: "PUT",
       body: JSON.stringify({ markdown }),
+    }),
+
+  // Activity worklist (f-157) — the operator's derived day + done-state.
+  activityWorklist: () => req<Worklist>("/api/activity/worklist"),
+  setActivityDone: (taskKey: string, done: boolean) =>
+    req<{ taskKey: string; done: boolean }>("/api/activity/done", {
+      method: "POST",
+      body: JSON.stringify({ taskKey, done }),
     }),
 
   // Resume documents (f-156) — the Write library + tailor-workspace persistence.

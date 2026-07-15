@@ -43,6 +43,13 @@
       "when": 1784068993898,
       "tag": "0005_luxuriant_starhawk",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784086531525,
+      "tag": "0006_woozy_tana_nile",
+      "breakpoints": true
     }
   ]
 }
